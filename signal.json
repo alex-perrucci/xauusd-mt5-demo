@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "bootstrap-2026-09-16",
+  "symbol": "XAUUSD",
+  "action": "NO_TRADE",
+  "entry_type": "MARKET",
+  "sl": null,
+  "tp": null,
+  "risk_pct": 0.5,
+  "created_at": "2026-09-16T19:30:00+02:00",
+  "valid_until": "2026-09-16T23:59:00+02:00",
+  "reason": "Bootstrap signal. No order should be opened."
+}
