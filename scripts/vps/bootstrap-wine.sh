@@ -14,17 +14,24 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 
-# WineHQ packages still publish both amd64 and i386 dependencies. Enabling i386
-# is idempotent and must happen before refreshing package indexes.
+# WineHQ publishes both amd64 and i386 dependencies. This is idempotent.
 dpkg --add-architecture i386
 
+# A previous interrupted/bootstrap attempt may have left a WineHQ source that
+# references an invalid .key file. Remove only our known WineHQ Resolute source
+# and key files BEFORE the first apt update, otherwise apt exits before we can
+# repair them.
+rm -f /etc/apt/sources.list.d/winehq-resolute.sources
+rm -f /etc/apt/keyrings/winehq-archive.key
+rm -f /etc/apt/keyrings/winehq-archive.gpg
+
+# Refresh only with the already-trusted Ubuntu/Docker sources, then install the
+# tools needed to build a valid WineHQ keyring.
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates wget gnupg xvfb xauth
 
 install -d -m 0755 /etc/apt/keyrings
 
-# Newer apt versions validate keyring filename/content format strictly. Keep the
-# binary dearmored key as .gpg and point the Deb822 source at it explicitly.
 tmp_key="$(mktemp)"
 tmp_sources="$(mktemp)"
 trap 'rm -f "$tmp_key" "$tmp_sources"' EXIT
@@ -37,10 +44,6 @@ wget -qO "$tmp_sources" https://dl.winehq.org/wine-builds/ubuntu/dists/resolute/
 sed 's#/etc/apt/keyrings/winehq-archive\.key#/etc/apt/keyrings/winehq-archive.gpg#g' \
   "$tmp_sources" > /etc/apt/sources.list.d/winehq-resolute.sources
 chmod 0644 /etc/apt/sources.list.d/winehq-resolute.sources
-
-# Remove the broken legacy key file from an earlier bootstrap attempt so apt
-# cannot emit misleading unsupported-filetype warnings.
-rm -f /etc/apt/keyrings/winehq-archive.key
 
 apt-get update
 apt-get install -y --install-recommends winehq-devel
