@@ -1,0 +1,19 @@
+[Unit]
+Description=XAUUSD ChatGPT-to-MT5 demo signal poller
+Requires=xauusd-mt5.service
+After=network-online.target xauusd-mt5.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=perrucci
+WorkingDirectory=/opt/xauusd-mt5-demo
+Environment=HOME=/home/perrucci
+Environment=DISPLAY=:99
+Environment=WINEPREFIX=/home/perrucci/.mt5
+ExecStart=/usr/bin/python3 /opt/xauusd-mt5-demo/bridge/poller.py --config /opt/xauusd-mt5-demo/config.json
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
