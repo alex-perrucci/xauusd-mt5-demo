@@ -11,6 +11,7 @@ USER_HOME=/home/perrucci
 WINEPREFIX=${USER_HOME}/.mt5
 DISPLAY_NUM=:99
 WINE_BIN=/opt/wine-devel/bin/wine
+WINEPATH_BIN=/opt/wine-devel/bin/winepath
 PY_EXE='C:\\Python311\\python.exe'
 PY_VERSION=3.11.9
 INSTALLER="/tmp/python-${PY_VERSION}-amd64.exe"
@@ -18,6 +19,7 @@ INSTALLER_URL="https://www.python.org/ftp/python/${PY_VERSION}/python-${PY_VERSI
 REPO_ROOT=/opt/xauusd-mt5-demo
 
 [[ -x "$WINE_BIN" ]] || { echo "Wine not found at $WINE_BIN" >&2; exit 1; }
+[[ -x "$WINEPATH_BIN" ]] || { echo "winepath not found at $WINEPATH_BIN" >&2; exit 1; }
 [[ -d "$WINEPREFIX" ]] || { echo "Wine prefix not found: $WINEPREFIX" >&2; exit 1; }
 [[ -f "$WINEPREFIX/drive_c/Program Files/MetaTrader 5/terminal64.exe" ]] || {
   echo "MetaTrader 5 terminal not found in prefix" >&2
@@ -74,7 +76,7 @@ sudo -u "$USER_NAME" env HOME="$USER_HOME" DISPLAY="$DISPLAY_NUM" WINEPREFIX="$W
   "$WINE_BIN" "$PY_EXE" -m pip install --disable-pip-version-check --no-cache-dir --upgrade pip
 
 echo "Installing Windows dependencies..."
-REQ_WIN="$($WINE_BIN winepath -w "${REPO_ROOT}/requirements-windows.txt")"
+REQ_WIN="$(sudo -u "$USER_NAME" env HOME="$USER_HOME" WINEPREFIX="$WINEPREFIX" "$WINEPATH_BIN" -w "${REPO_ROOT}/requirements-windows.txt")"
 sudo -u "$USER_NAME" env HOME="$USER_HOME" DISPLAY="$DISPLAY_NUM" WINEPREFIX="$WINEPREFIX" \
   PATH="/opt/wine-devel/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
   "$WINE_BIN" "$PY_EXE" -m pip install --disable-pip-version-check --no-cache-dir -r "$REQ_WIN"
