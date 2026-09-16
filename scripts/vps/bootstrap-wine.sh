@@ -14,19 +14,12 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 
-# WineHQ publishes both amd64 and i386 dependencies. This is idempotent.
 dpkg --add-architecture i386
 
-# A previous interrupted/bootstrap attempt may have left a WineHQ source that
-# references an invalid .key file. Remove only our known WineHQ Resolute source
-# and key files BEFORE the first apt update, otherwise apt exits before we can
-# repair them.
 rm -f /etc/apt/sources.list.d/winehq-resolute.sources
 rm -f /etc/apt/keyrings/winehq-archive.key
 rm -f /etc/apt/keyrings/winehq-archive.gpg
 
-# Refresh only with the already-trusted Ubuntu/Docker sources, then install the
-# tools needed to build a valid WineHQ keyring.
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates wget gnupg xvfb xauth
 
@@ -46,7 +39,22 @@ sed 's#/etc/apt/keyrings/winehq-archive\.key#/etc/apt/keyrings/winehq-archive.gp
 chmod 0644 /etc/apt/sources.list.d/winehq-resolute.sources
 
 apt-get update
-apt-get install -y --install-recommends winehq-devel
+
+# Wine 11.17 has an upstream startup regression that can produce
+# 'could not load kernel32.dll, status c0000135'. Pin 11.16 until fixed.
+TARGET_VERSION="$(apt-cache madison winehq-devel | awk '$3 ~ /^11\.16/ {print $3; exit}')"
+if [[ -z "$TARGET_VERSION" ]]; then
+  echo "WineHQ 11.16 not found. Available versions:" >&2
+  apt-cache madison winehq-devel >&2 || true
+  exit 1
+fi
+
+apt-get install -y --allow-downgrades --install-recommends \
+  "winehq-devel=${TARGET_VERSION}" \
+  "wine-devel=${TARGET_VERSION}" \
+  "wine-devel-amd64=${TARGET_VERSION}" \
+  "wine-devel-i386:i386=${TARGET_VERSION}"
+apt-mark hold winehq-devel wine-devel wine-devel-amd64 wine-devel-i386:i386 >/dev/null
 
 WINE_BIN="$(command -v wine || true)"
 if [[ -z "$WINE_BIN" && -x /opt/wine-devel/bin/wine ]]; then
@@ -67,3 +75,6 @@ command -v Xvfb
 
 printf '\nForeign architectures:\n'
 dpkg --print-foreign-architectures
+
+printf '\nHeld Wine packages:\n'
+apt-mark showhold | grep '^wine' || true
