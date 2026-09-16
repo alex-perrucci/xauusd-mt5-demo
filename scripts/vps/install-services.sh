@@ -1,49 +1,28 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REPO_ROOT="/opt/xauusd-mt5-demo"
-SERVICE_DIR="/etc/systemd/system"
-WINE_BIN="/opt/wine-devel/bin/wine"
-WINEPATH_BIN="/opt/wine-devel/bin/winepath"
+ROOT=/opt/xauusd-mt5-demo
+SYSTEMD=/etc/systemd/system
+EA_EX5='/home/perrucci/.mt5/drive_c/Program Files/MetaTrader 5/MQL5/Experts/XAUUSD/SignalBridge.ex5'
 
-if [[ "${EUID}" -ne 0 ]]; then
-  echo "Run as root: sudo bash scripts/vps/install-services.sh" >&2
-  exit 1
+[[ ${EUID} -eq 0 ]] || { echo "run as root" >&2; exit 1; }
+[[ -d "$ROOT/.git" ]] || { echo "repo missing at $ROOT" >&2; exit 1; }
+id perrucci >/dev/null 2>&1 || { echo "user perrucci missing" >&2; exit 1; }
+command -v Xvfb >/dev/null || { echo "Xvfb missing" >&2; exit 1; }
+[[ -x /opt/wine-devel/bin/wine ]] || { echo "Wine missing" >&2; exit 1; }
+[[ -f "$EA_EX5" ]] || { echo "compiled EA missing: $EA_EX5" >&2; exit 1; }
+
+install -m 0644 "$ROOT/deploy/vps/xauusd-xvfb.service" "$SYSTEMD/xauusd-xvfb.service"
+install -m 0644 "$ROOT/deploy/vps/xauusd-mt5.service" "$SYSTEMD/xauusd-mt5.service"
+install -m 0644 "$ROOT/deploy/vps/xauusd-poller.service" "$SYSTEMD/xauusd-poller.service"
+
+if [[ ! -f "$ROOT/config.json" ]]; then
+  cp "$ROOT/config.example.json" "$ROOT/config.json"
 fi
-
-if [[ ! -d "${REPO_ROOT}/.git" ]]; then
-  echo "Expected repository at ${REPO_ROOT}" >&2
-  exit 1
-fi
-
-if ! id perrucci >/dev/null 2>&1; then
-  echo "Expected VPS user 'perrucci' does not exist" >&2
-  exit 1
-fi
-
-for cmd in Xvfb python3 git; do
-  command -v "${cmd}" >/dev/null 2>&1 || {
-    echo "Missing required command: ${cmd}" >&2
-    exit 1
-  }
-done
-
-[[ -x "${WINE_BIN}" ]] || { echo "Missing WineHQ devel binary: ${WINE_BIN}" >&2; exit 1; }
-[[ -x "${WINEPATH_BIN}" ]] || { echo "Missing WineHQ winepath binary: ${WINEPATH_BIN}" >&2; exit 1; }
-
-install -m 0644 "${REPO_ROOT}/deploy/vps/xauusd-xvfb.service" "${SERVICE_DIR}/xauusd-xvfb.service"
-install -m 0644 "${REPO_ROOT}/deploy/vps/xauusd-mt5.service" "${SERVICE_DIR}/xauusd-mt5.service"
-install -m 0644 "${REPO_ROOT}/deploy/vps/xauusd-poller.service" "${SERVICE_DIR}/xauusd-poller.service"
-
-if [[ ! -f "${REPO_ROOT}/config.json" ]]; then
-  cp "${REPO_ROOT}/config.example.json" "${REPO_ROOT}/config.json"
-fi
-
-chown -R perrucci:perrucci "${REPO_ROOT}"
-chmod 600 "${REPO_ROOT}/config.json"
+chown perrucci:perrucci "$ROOT/config.json"
+chmod 0600 "$ROOT/config.json"
 
 systemctl daemon-reload
-systemctl enable xauusd-xvfb.service xauusd-mt5.service xauusd-poller.service
+systemctl enable xauusd-xvfb.service xauusd-mt5.service xauusd-poller.service >/dev/null
 
-echo "Services installed and enabled."
-echo "Do not start xauusd-mt5/xauusd-poller until MT5, Windows Python and the demo login are configured."
+echo "services installed and enabled; they are intentionally not started yet"
