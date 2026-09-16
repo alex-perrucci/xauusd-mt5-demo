@@ -1,12 +1,8 @@
 {
   "auto_git_pull": true,
-  "poll_seconds": 60,
+  "poll_seconds": 30,
   "max_risk_pct": 0.5,
-  "max_spread_points": 100,
-  "magic": 560017,
-  "broker_symbol": "XAUUSD",
-  "deviation_points": 30,
-  "wine_prefix": "~/.mt5",
-  "windows_python": "C:\\Python311\\python.exe",
-  "terminal_path": "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+  "signal_path": "signal.json",
+  "bridge_file": "/home/perrucci/.mt5/drive_c/Program Files/MetaTrader 5/MQL5/Files/xauusd/signal.txt",
+  "ack_file": "/home/perrucci/.mt5/drive_c/Program Files/MetaTrader 5/MQL5/Files/xauusd/ack.txt"
 }
