@@ -1,0 +1,12 @@
+{
+  "auto_git_pull": true,
+  "poll_seconds": 60,
+  "max_risk_pct": 0.5,
+  "max_spread_points": 100,
+  "magic": 560017,
+  "broker_symbol": "XAUUSD",
+  "deviation_points": 30,
+  "wine_prefix": "~/.wine-mt5",
+  "windows_python": "C:\\Python311\\python.exe",
+  "terminal_path": ""
+}
