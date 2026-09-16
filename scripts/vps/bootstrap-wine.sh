@@ -21,7 +21,7 @@ rm -f /etc/apt/keyrings/winehq-archive.key
 rm -f /etc/apt/keyrings/winehq-archive.gpg
 
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates wget gnupg xvfb xauth
+apt-get install -y --no-install-recommends ca-certificates wget gnupg xvfb xauth libegl1 libegl1:i386
 
 install -d -m 0755 /etc/apt/keyrings
 
@@ -42,19 +42,19 @@ apt-get update
 
 # Wine 11.17 has an upstream startup regression that can produce
 # 'could not load kernel32.dll, status c0000135'. Pin 11.16 until fixed.
-TARGET_VERSION="$(apt-cache madison winehq-devel | awk '$3 ~ /^11\.16/ {print $3; exit}')"
+MADISON_OUTPUT="$(apt-cache madison winehq-devel || true)"
+TARGET_VERSION="$(awk '$3 ~ /^11\.16/ && !found {v=$3; found=1} END {print v}' <<<"$MADISON_OUTPUT")"
 if [[ -z "$TARGET_VERSION" ]]; then
   echo "WineHQ 11.16 not found. Available versions:" >&2
-  apt-cache madison winehq-devel >&2 || true
+  printf '%s\n' "$MADISON_OUTPUT" >&2
   exit 1
 fi
 
+apt-mark unhold winehq-devel wine-devel >/dev/null 2>&1 || true
 apt-get install -y --allow-downgrades --install-recommends \
   "winehq-devel=${TARGET_VERSION}" \
-  "wine-devel=${TARGET_VERSION}" \
-  "wine-devel-amd64=${TARGET_VERSION}" \
-  "wine-devel-i386:i386=${TARGET_VERSION}"
-apt-mark hold winehq-devel wine-devel wine-devel-amd64 wine-devel-i386:i386 >/dev/null
+  "wine-devel=${TARGET_VERSION}"
+apt-mark hold winehq-devel wine-devel >/dev/null
 
 WINE_BIN="$(command -v wine || true)"
 if [[ -z "$WINE_BIN" && -x /opt/wine-devel/bin/wine ]]; then
