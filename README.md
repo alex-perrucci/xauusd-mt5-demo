@@ -1,32 +1,76 @@
-# XAUUSD MT5 Demo
+# XAUUSD MT5 Demo Bridge
 
-Experimental demo-only automation for XAUUSD.
+Demo-only autonomous experiment:
 
-Flow:
+`ChatGPT Scheduler -> GitHub signal.json -> Linux poller -> MQL5 file sandbox -> MT5 Expert Advisor -> demo broker`
 
-1. ChatGPT Scheduler analyzes XAUUSD and updates `signal.json`.
-2. The Linux VPS pulls the repository and validates the signal.
-3. A Linux poller invokes a Windows Python process under Wine.
-4. The Windows process talks to a running MetaTrader 5 terminal through the official `MetaTrader5` Python package.
-5. Orders are accepted only when the connected MT5 account is a DEMO account.
+There is **no Windows Python** and no `MetaTrader5` Python package. MT5 is the only Windows application running under Wine. Trade execution lives natively inside the MQL5 Expert Advisor.
 
-## Safety defaults
+## Safety invariants
 
-- XAUUSD only.
-- Demo accounts only.
-- One managed position at a time.
-- Stop-loss required for opening trades.
-- Take-profit required for opening trades.
-- Maximum configured risk per trade: 0.5% of account equity.
-- Duplicate signal IDs are ignored.
-- Expired signals are ignored.
-- No credentials or broker passwords belong in this repository.
+The EA enforces these locally, independently of the model and GitHub:
+
+- account must be `DEMO`;
+- expected login and server must match the local guard;
+- logical instrument is XAUUSD only;
+- hard absolute risk cap: 0.5% equity per new trade;
+- mandatory SL and TP for BUY/SELL;
+- live reward/risk must be at least 2.0;
+- spread cap;
+- no position stacking on the broker symbol;
+- persistent signal-id deduplication;
+- expired signals are blocked;
+- `OrderCheck()` before `OrderSend()`;
+- CLOSE/MODIFY affect only positions created with the configured magic number;
+- no credentials are stored in Git.
+
+## VPS layout
+
+- repository: `/opt/xauusd-mt5-demo`
+- Wine prefix: `/home/perrucci/.mt5`
+- MT5 portable data: `/home/perrucci/.mt5/drive_c/Program Files/MetaTrader 5`
+- local secrets: `/etc/xauusd-mt5-demo/mt5.env`
+- EA: `MQL5/Experts/XAUUSD/SignalBridge.ex5`
+- file bridge: `MQL5/Files/xauusd/`
+
+## Clean installation
+
+From the VPS:
+
+```bash
+sudo -iu perrucci git -C /opt/xauusd-mt5-demo pull --ff-only
+sudo bash /opt/xauusd-mt5-demo/scripts/vps/reset-setup.sh
+```
+
+`reset-setup.sh` intentionally removes only the previous `/home/perrucci/.mt5` runtime and `/etc/xauusd-mt5-demo`, pins the supported Wine build, installs MT5, compiles the MQL5 EA, and installs systemd units. It does **not** start trading.
+
+Then configure the demo account locally:
+
+```bash
+sudo cp /etc/xauusd-mt5-demo/mt5.env.example /etc/xauusd-mt5-demo/mt5.env
+sudo chmod 600 /etc/xauusd-mt5-demo/mt5.env
+sudoedit /etc/xauusd-mt5-demo/mt5.env
+sudo bash /opt/xauusd-mt5-demo/scripts/vps/configure-demo.sh
+```
+
+Use the exact demo login, demo server and broker symbol shown by the broker. Never put the password in GitHub.
+
+## Runtime services
+
+- `xauusd-xvfb.service` — private virtual X display;
+- `xauusd-mt5.service` — MT5 in `/portable` mode, with the EA loaded via startup config;
+- `xauusd-poller.service` — Linux-only Git poller that converts `signal.json` into the EA bridge file.
+
+Useful checks:
+
+```bash
+sudo bash /opt/xauusd-mt5-demo/scripts/vps/doctor.sh
+sudo journalctl -u xauusd-mt5 -u xauusd-poller -n 100 --no-pager
+```
 
 ## Signal contract
 
-`signal.json` is the interface between ChatGPT Scheduler and the VPS.
-
-Supported actions:
+GitHub `signal.json` supports:
 
 - `NO_TRADE`
 - `BUY`
@@ -35,34 +79,6 @@ Supported actions:
 - `CLOSE`
 - `MODIFY`
 
-A BUY/SELL signal must include `sl`, `tp`, `risk_pct`, `created_at`, and `valid_until`.
+BUY/SELL are market-only and require positive `risk_pct`, `sl`, `tp`, timezone-aware `created_at`, and `valid_until`.
 
-Example:
-
-```json
-{
-  "schema_version": 1,
-  "id": "2026-09-17-morning",
-  "symbol": "XAUUSD",
-  "action": "BUY",
-  "entry_type": "MARKET",
-  "sl": 3651.4,
-  "tp": 3698.2,
-  "risk_pct": 0.5,
-  "created_at": "2026-09-17T08:00:00+02:00",
-  "valid_until": "2026-09-17T12:00:00+02:00",
-  "reason": "Daily trend bullish; H4 pullback confirmed; macro context supportive."
-}
-```
-
-## VPS overview
-
-The Linux side runs `bridge/poller.py`. It performs a `git pull --ff-only`, validates the signal, checks that the signal has not already been processed, then invokes the configured Wine/Windows-Python command.
-
-The Windows-side executor is `bridge/mt5_executor.py`. It connects to the already-running MT5 terminal and performs the requested demo action.
-
-See `config.example.json` and `scripts/run.sh` for the expected configuration.
-
-## Important
-
-This project is deliberately limited to demo trading. It is an experiment for measuring whether the strategy has any edge; it is not a guarantee of profitability and should not be pointed at a live account without a separate review and explicit redesign of the safety model.
+This repository is for a demo experiment. It makes no profitability claim and should not be pointed at a live account without a separate design and review.
