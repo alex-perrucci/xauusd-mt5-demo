@@ -1,0 +1,13 @@
+[Unit]
+Description=XAUUSD MT5 virtual X display
+After=network.target
+
+[Service]
+Type=simple
+User=perrucci
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1280x720x24 -nolisten tcp -ac
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
