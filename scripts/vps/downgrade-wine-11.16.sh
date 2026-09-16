@@ -38,17 +38,16 @@ fi
 
 printf 'Target WineHQ version: %s\n' "$TARGET_LINE"
 
-# In case an earlier attempt managed to hold any Wine package, clear those
-# holds before performing the explicit downgrade.
-apt-mark unhold winehq-devel wine-devel wine-devel-amd64 wine-devel-i386:i386 >/dev/null 2>&1 || true
+# Ubuntu 26.04 WineHQ packages the development runtime as wine-devel; the old
+# split package names wine-devel-amd64 / wine-devel-i386 are not published for
+# Resolute. Let apt resolve the architecture dependencies from wine-devel.
+apt-mark unhold winehq-devel wine-devel >/dev/null 2>&1 || true
 
 apt-get install -y --allow-downgrades --install-recommends \
   "winehq-devel=${TARGET_LINE}" \
-  "wine-devel=${TARGET_LINE}" \
-  "wine-devel-amd64=${TARGET_LINE}" \
-  "wine-devel-i386:i386=${TARGET_LINE}"
+  "wine-devel=${TARGET_LINE}"
 
-apt-mark hold winehq-devel wine-devel wine-devel-amd64 wine-devel-i386:i386 >/dev/null
+apt-mark hold winehq-devel wine-devel >/dev/null
 
 printf '\nInstalled Wine version:\n'
 INSTALLED_VERSION="$($WINE_BIN --version)"
