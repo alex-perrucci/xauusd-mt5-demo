@@ -6,7 +6,7 @@
   "magic": 560017,
   "broker_symbol": "XAUUSD",
   "deviation_points": 30,
-  "wine_prefix": "~/.wine-mt5",
+  "wine_prefix": "~/.mt5",
   "windows_python": "C:\\Python311\\python.exe",
-  "terminal_path": ""
+  "terminal_path": "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
 }
