@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 REPO_ROOT="/opt/xauusd-mt5-demo"
 SERVICE_DIR="/etc/systemd/system"
+WINE_BIN="/opt/wine-devel/bin/wine"
+WINEPATH_BIN="/opt/wine-devel/bin/winepath"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run as root: sudo bash scripts/vps/install-services.sh" >&2
@@ -19,12 +21,15 @@ if ! id perrucci >/dev/null 2>&1; then
   exit 1
 fi
 
-for cmd in wine winepath Xvfb python3 git; do
+for cmd in Xvfb python3 git; do
   command -v "${cmd}" >/dev/null 2>&1 || {
     echo "Missing required command: ${cmd}" >&2
     exit 1
   }
 done
+
+[[ -x "${WINE_BIN}" ]] || { echo "Missing WineHQ devel binary: ${WINE_BIN}" >&2; exit 1; }
+[[ -x "${WINEPATH_BIN}" ]] || { echo "Missing WineHQ winepath binary: ${WINEPATH_BIN}" >&2; exit 1; }
 
 install -m 0644 "${REPO_ROOT}/deploy/vps/xauusd-xvfb.service" "${SERVICE_DIR}/xauusd-xvfb.service"
 install -m 0644 "${REPO_ROOT}/deploy/vps/xauusd-mt5.service" "${SERVICE_DIR}/xauusd-mt5.service"
