@@ -1,6 +1,5 @@
 [Unit]
-Description=XAUUSD ChatGPT-to-MT5 demo signal poller
-Requires=xauusd-mt5.service
+Description=XAUUSD GitHub to MQL5 file bridge
 After=network-online.target xauusd-mt5.service
 Wants=network-online.target
 
@@ -9,9 +8,6 @@ Type=simple
 User=perrucci
 WorkingDirectory=/opt/xauusd-mt5-demo
 Environment=HOME=/home/perrucci
-Environment=DISPLAY=:99
-Environment=WINEPREFIX=/home/perrucci/.mt5
-Environment=PATH=/opt/wine-devel/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/bin/python3 /opt/xauusd-mt5-demo/bridge/poller.py --config /opt/xauusd-mt5-demo/config.json
 Restart=always
 RestartSec=10
