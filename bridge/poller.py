@@ -5,18 +5,13 @@ import argparse
 import json
 import os
 import subprocess
-import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-SIGNAL_PATH = ROOT / "signal.json"
-STATE_DIR = ROOT / "state"
-STATE_PATH = STATE_DIR / "poller_state.json"
-EXECUTOR_PATH = ROOT / "bridge" / "mt5_executor.py"
-
 ALLOWED_ACTIONS = {"NO_TRADE", "BUY", "SELL", "HOLD", "CLOSE", "MODIFY"}
 
 
@@ -25,212 +20,165 @@ def load_json(path: Path) -> dict[str, Any]:
         return json.load(fh)
 
 
-def save_json_atomic(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2, sort_keys=True)
-        fh.write("\n")
-    tmp.replace(path)
-
-
-def parse_iso8601(value: str) -> datetime:
+def parse_dt(value: str, field: str) -> datetime:
     dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if dt.tzinfo is None:
-        raise ValueError("timestamp must include timezone")
-    return dt
+        raise ValueError(f"{field} must be timezone-aware")
+    return dt.astimezone(timezone.utc)
 
 
-def validate_signal(signal: dict[str, Any], max_risk_pct: float) -> None:
+def validate_signal(signal: dict[str, Any], max_risk_pct: float) -> tuple[str, int, int]:
     if signal.get("schema_version") != 1:
-        raise ValueError("unsupported schema_version")
+        raise ValueError("schema_version must be 1")
 
-    signal_id = signal.get("id")
-    if not isinstance(signal_id, str) or not signal_id.strip():
-        raise ValueError("signal id is required")
+    signal_id = str(signal.get("id", "")).strip()
+    if not signal_id or "|" in signal_id or "\n" in signal_id or "\r" in signal_id:
+        raise ValueError("invalid signal id")
 
     if signal.get("symbol") != "XAUUSD":
-        raise ValueError("only XAUUSD is accepted")
+        raise ValueError("logical symbol must be XAUUSD")
 
-    action = signal.get("action")
+    action = str(signal.get("action", ""))
     if action not in ALLOWED_ACTIONS:
-        raise ValueError(f"unsupported action: {action}")
+        raise ValueError(f"unsupported action {action!r}")
 
-    created_at = signal.get("created_at")
-    valid_until = signal.get("valid_until")
-    if not isinstance(created_at, str) or not isinstance(valid_until, str):
-        raise ValueError("created_at and valid_until are required")
-
-    created_dt = parse_iso8601(created_at)
-    valid_until_dt = parse_iso8601(valid_until)
-    if valid_until_dt <= created_dt:
+    created = parse_dt(str(signal.get("created_at", "")), "created_at")
+    valid_until = parse_dt(str(signal.get("valid_until", "")), "valid_until")
+    if valid_until <= created:
         raise ValueError("valid_until must be after created_at")
 
     now = datetime.now(timezone.utc)
-    if now > valid_until_dt.astimezone(timezone.utc):
+    if now > valid_until:
         raise ValueError("signal is expired")
+
+    risk_raw = signal.get("risk_pct", 0.0)
+    try:
+        risk_pct = float(risk_raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("risk_pct must be numeric") from exc
+
+    if risk_pct < 0 or risk_pct > max_risk_pct or risk_pct > 0.5:
+        raise ValueError(f"risk_pct must be between 0 and {min(max_risk_pct, 0.5)}")
 
     if action in {"BUY", "SELL"}:
         if signal.get("entry_type") != "MARKET":
-            raise ValueError("only MARKET entries are supported")
-        for key in ("sl", "tp", "risk_pct"):
-            value = signal.get(key)
-            if not isinstance(value, (int, float)):
-                raise ValueError(f"{key} must be numeric")
-        if float(signal["sl"]) <= 0 or float(signal["tp"]) <= 0:
-            raise ValueError("sl and tp must be positive")
-        risk_pct = float(signal["risk_pct"])
-        if risk_pct <= 0 or risk_pct > max_risk_pct:
-            raise ValueError(f"risk_pct must be > 0 and <= {max_risk_pct}")
+            raise ValueError("BUY/SELL require MARKET entry_type")
+        for field in ("sl", "tp"):
+            try:
+                value = float(signal[field])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"{field} must be numeric for {action}") from exc
+            if value <= 0:
+                raise ValueError(f"{field} must be > 0 for {action}")
+        if risk_pct <= 0:
+            raise ValueError("BUY/SELL require positive risk_pct")
 
-    if action == "MODIFY":
-        sl = signal.get("sl")
-        tp = signal.get("tp")
-        if sl is None and tp is None:
-            raise ValueError("MODIFY requires sl and/or tp")
-        for key, value in (("sl", sl), ("tp", tp)):
-            if value is not None and (not isinstance(value, (int, float)) or float(value) <= 0):
-                raise ValueError(f"{key} must be a positive number or null")
+    if action == "MODIFY" and signal.get("sl") is None and signal.get("tp") is None:
+        raise ValueError("MODIFY requires sl and/or tp")
+
+    return action, int(created.timestamp()), int(valid_until.timestamp())
+
+
+def to_bridge_line(signal: dict[str, Any], created_epoch: int, valid_epoch: int) -> str:
+    def optional_number(name: str) -> str:
+        value = signal.get(name)
+        return "" if value is None else format(float(value), ".10g")
+
+    fields = [
+        "1",
+        str(signal["id"]),
+        str(signal["action"]),
+        "XAUUSD",
+        optional_number("sl"),
+        optional_number("tp"),
+        format(float(signal.get("risk_pct", 0.0)), ".10g"),
+        str(created_epoch),
+        str(valid_epoch),
+    ]
+    return "|".join(fields) + "\n"
+
+
+def atomic_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent), text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="ascii", newline="\n") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, path)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
 
 
 def git_pull() -> None:
-    result = subprocess.run(
+    subprocess.run(
         ["git", "-C", str(ROOT), "pull", "--ff-only"],
+        check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        timeout=45,
     )
-    if result.returncode != 0:
-        raise RuntimeError(f"git pull failed: {result.stdout.strip()}")
 
 
-def winepath(path: Path, env: dict[str, str]) -> str:
-    result = subprocess.run(
-        ["winepath", "-w", str(path)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"winepath failed for {path}: {result.stderr.strip()}")
-    return result.stdout.strip()
-
-
-def execute_signal(signal: dict[str, Any], config: dict[str, Any]) -> int:
-    action = signal["action"]
-    if action in {"NO_TRADE", "HOLD"}:
-        print(f"[{datetime.now().isoformat()}] {action}: nothing to execute")
-        return 0
-
-    env = os.environ.copy()
-    wine_prefix = os.path.expanduser(str(config.get("wine_prefix", "~/.wine-mt5")))
-    env["WINEPREFIX"] = wine_prefix
-
-    windows_python = str(config.get("windows_python", "")).strip()
-    if not windows_python:
-        raise RuntimeError("windows_python is missing from config.json")
-
-    win_executor = winepath(EXECUTOR_PATH, env)
-    win_signal = winepath(SIGNAL_PATH, env)
-
-    cmd = [
-        "wine",
-        windows_python,
-        win_executor,
-        "--signal",
-        win_signal,
-        "--broker-symbol",
-        str(config.get("broker_symbol", "XAUUSD")),
-        "--magic",
-        str(int(config.get("magic", 560017))),
-        "--max-risk-pct",
-        str(float(config.get("max_risk_pct", 0.5))),
-        "--max-spread-points",
-        str(float(config.get("max_spread_points", 100))),
-        "--deviation-points",
-        str(int(config.get("deviation_points", 30))),
-    ]
-
-    terminal_path = str(config.get("terminal_path", "")).strip()
-    if terminal_path:
-        cmd.extend(["--terminal-path", terminal_path])
-
-    result = subprocess.run(cmd, env=env)
-    return result.returncode
-
-
-def load_state() -> dict[str, Any]:
-    if not STATE_PATH.exists():
-        return {"processed_ids": []}
+def read_ack(path: Path) -> str:
     try:
-        state = load_json(STATE_PATH)
-    except Exception:
-        return {"processed_ids": []}
-    if not isinstance(state.get("processed_ids"), list):
-        state["processed_ids"] = []
-    return state
-
-
-def mark_processed(state: dict[str, Any], signal_id: str) -> None:
-    ids = [str(x) for x in state.get("processed_ids", []) if x]
-    if signal_id not in ids:
-        ids.append(signal_id)
-    state["processed_ids"] = ids[-500:]
-    state["last_processed_id"] = signal_id
-    state["last_processed_at"] = datetime.now(timezone.utc).isoformat()
-    save_json_atomic(STATE_PATH, state)
-
-
-def process_once(config: dict[str, Any]) -> None:
-    if bool(config.get("auto_git_pull", True)):
-        git_pull()
-
-    signal = load_json(SIGNAL_PATH)
-    max_risk_pct = float(config.get("max_risk_pct", 0.5))
-    validate_signal(signal, max_risk_pct=max_risk_pct)
-
-    state = load_state()
-    signal_id = str(signal["id"])
-    if signal_id in state.get("processed_ids", []):
-        return
-
-    print(f"[{datetime.now().isoformat()}] processing {signal_id}: {signal['action']}")
-    rc = execute_signal(signal, config)
-    if rc != 0:
-        raise RuntimeError(f"MT5 executor exited with code {rc}")
-
-    mark_processed(state, signal_id)
+        return path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return ""
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Poll ChatGPT-produced XAUUSD signals and execute them on MT5 demo.")
-    parser.add_argument("--config", default=str(ROOT / "config.json"))
-    parser.add_argument("--once", action="store_true")
+    parser = argparse.ArgumentParser(description="Publish GitHub XAUUSD signals into the MT5 MQL5 file sandbox.")
+    parser.add_argument("--config", required=True)
     args = parser.parse_args()
 
-    config_path = Path(args.config).resolve()
-    if not config_path.exists():
-        print(f"Missing config: {config_path}. Copy config.example.json to config.json first.", file=sys.stderr)
-        return 2
-
+    config_path = Path(args.config)
     config = load_json(config_path)
-    poll_seconds = max(10, int(config.get("poll_seconds", 60)))
+    signal_path = ROOT / str(config.get("signal_path", "signal.json"))
+    bridge_path = Path(os.path.expanduser(str(config["bridge_file"])))
+    ack_path = Path(os.path.expanduser(str(config["ack_file"])))
+    poll_seconds = max(5, int(config.get("poll_seconds", 30)))
+    max_risk_pct = min(0.5, float(config.get("max_risk_pct", 0.5)))
+    auto_git_pull = bool(config.get("auto_git_pull", True))
+
+    last_published = ""
+    last_ack = ""
+    print(f"bridge ready: signal={signal_path} -> {bridge_path}", flush=True)
 
     while True:
         try:
-            process_once(config)
-        except ValueError as exc:
-            # Invalid or expired signals should not hammer MT5. Log and wait for a new Git commit.
-            print(f"[{datetime.now().isoformat()}] signal rejected: {exc}", file=sys.stderr)
+            if auto_git_pull:
+                git_pull()
+
+            signal = load_json(signal_path)
+            action, created_epoch, valid_epoch = validate_signal(signal, max_risk_pct)
+            signal_id = str(signal["id"])
+
+            if signal_id != last_published:
+                atomic_write(bridge_path, to_bridge_line(signal, created_epoch, valid_epoch))
+                last_published = signal_id
+                print(f"published signal id={signal_id} action={action}", flush=True)
+
+            ack = read_ack(ack_path)
+            if ack and ack != last_ack:
+                last_ack = ack
+                print(f"mt5 ack: {ack}", flush=True)
+
+        except subprocess.TimeoutExpired:
+            print("ERROR git pull timed out", flush=True)
+        except subprocess.CalledProcessError as exc:
+            output = exc.stdout.strip() if exc.stdout else str(exc)
+            print(f"ERROR git pull failed: {output}", flush=True)
         except Exception as exc:
-            print(f"[{datetime.now().isoformat()}] poller error: {exc}", file=sys.stderr)
+            print(f"ERROR {type(exc).__name__}: {exc}", flush=True)
 
-        if args.once:
-            break
         time.sleep(poll_seconds)
-
-    return 0
 
 
 if __name__ == "__main__":
