@@ -1,5 +1,5 @@
 [Unit]
-Description=XAUUSD MetaTrader 5 demo terminal
+Description=XAUUSD MetaTrader 5 demo terminal with native MQL5 bridge
 Requires=xauusd-xvfb.service
 After=network-online.target xauusd-xvfb.service
 Wants=network-online.target
@@ -11,8 +11,9 @@ WorkingDirectory=/opt/xauusd-mt5-demo
 Environment=HOME=/home/perrucci
 Environment=DISPLAY=:99
 Environment=WINEPREFIX=/home/perrucci/.mt5
+Environment=WINEDEBUG=-all
 Environment=PATH=/opt/wine-devel/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/opt/wine-devel/bin/wine "/home/perrucci/.mt5/drive_c/Program Files/MetaTrader 5/terminal64.exe"
+ExecStart=/usr/bin/bash /opt/xauusd-mt5-demo/scripts/vps/run-mt5.sh
 Restart=always
 RestartSec=10
 TimeoutStopSec=30
