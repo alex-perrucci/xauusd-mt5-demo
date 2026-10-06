@@ -13,6 +13,7 @@
 #define ABS_MAX_VOLUME     0.01
 #define ABS_MIN_RR         2.0
 #define ABS_MAX_EXPOSURES  3
+#define HUGE_RISK          1.0e100
 
 struct GuardConfig
   {
@@ -425,10 +426,10 @@ double RiskAmountForTrade(const string symbol,const ENUM_ORDER_TYPE direction,
                           const double volume,const double entry,const double sl)
   {
    if(volume<=0 || entry<=0 || sl<=0)
-      return DBL_MAX;
+      return HUGE_RISK;
    double profit=0.0;
    if(!OrderCalcProfit(direction,symbol,volume,entry,sl,profit))
-      return DBL_MAX;
+      return HUGE_RISK;
    if(profit>=0)
       return 0.0;
    return -profit;
@@ -450,8 +451,8 @@ double ManagedRiskAmount(const GuardConfig &guard,const ulong exclude_ticket=0)
                                        PositionGetDouble(POSITION_VOLUME),
                                        PositionGetDouble(POSITION_PRICE_OPEN),
                                        PositionGetDouble(POSITION_SL));
-      if(amount==DBL_MAX)
-         return DBL_MAX;
+      if(amount==HUGE_RISK)
+         return HUGE_RISK;
       total+=amount;
      }
 
@@ -465,8 +466,8 @@ double ManagedRiskAmount(const GuardConfig &guard,const ulong exclude_ticket=0)
                                        OrderGetDouble(ORDER_VOLUME_CURRENT),
                                        OrderGetDouble(ORDER_PRICE_OPEN),
                                        OrderGetDouble(ORDER_SL));
-      if(amount==DBL_MAX)
-         return DBL_MAX;
+      if(amount==HUGE_RISK)
+         return HUGE_RISK;
       total+=amount;
      }
    return total;
@@ -476,7 +477,7 @@ double ManagedRiskPct(const GuardConfig &guard)
   {
    double equity=AccountInfoDouble(ACCOUNT_EQUITY);
    double amount=ManagedRiskAmount(guard,0);
-   if(equity<=0 || amount==DBL_MAX)
+   if(equity<=0 || amount==HUGE_RISK)
       return 999.0;
    return 100.0*amount/equity;
   }
@@ -485,13 +486,13 @@ bool CheckAggregateRisk(const GuardConfig &guard,const double candidate_amount,
                         const ulong exclude_ticket,string &message)
   {
    double equity=AccountInfoDouble(ACCOUNT_EQUITY);
-   if(equity<=0 || candidate_amount<0 || candidate_amount==DBL_MAX)
+   if(equity<=0 || candidate_amount<0 || candidate_amount==HUGE_RISK)
      {
       message="invalid aggregate risk inputs";
       return false;
      }
    double current=ManagedRiskAmount(guard,exclude_ticket);
-   if(current==DBL_MAX)
+   if(current==HUGE_RISK)
      {
       message="existing managed exposure has no valid SL/risk";
       return false;
@@ -1123,7 +1124,7 @@ void WriteState()
                                             PositionGetDouble(POSITION_VOLUME),
                                             PositionGetDouble(POSITION_PRICE_OPEN),
                                             PositionGetDouble(POSITION_SL));
-      double risk_pct=(equity>0 && risk_amount!=DBL_MAX) ? 100.0*risk_amount/equity : 999.0;
+      double risk_pct=(equity>0 && risk_amount!=HUGE_RISK) ? 100.0*risk_amount/equity : 999.0;
       content+="\nP|"+(string)ticket+
                "|"+type+
                "|"+DoubleToString(PositionGetDouble(POSITION_VOLUME),8)+
@@ -1146,7 +1147,7 @@ void WriteState()
                                             OrderGetDouble(ORDER_VOLUME_CURRENT),
                                             OrderGetDouble(ORDER_PRICE_OPEN),
                                             OrderGetDouble(ORDER_SL));
-      double risk_pct=(equity>0 && risk_amount!=DBL_MAX) ? 100.0*risk_amount/equity : 999.0;
+      double risk_pct=(equity>0 && risk_amount!=HUGE_RISK) ? 100.0*risk_amount/equity : 999.0;
       datetime expiration=(datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
       string expiration_utc=expiration>0 ? (string)BrokerTimeToUtcEpoch(expiration) : "";
       content+="\nO|"+(string)ticket+
