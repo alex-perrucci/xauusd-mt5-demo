@@ -131,7 +131,14 @@ config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
 PY
 chown perrucci:perrucci "$ROOT/config.json"
 chmod 0600 "$ROOT/config.json"
-python3 -m py_compile "$ROOT/bridge/poller.py"
+python3 - "$ROOT/bridge/poller.py" <<'PY'
+import ast
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+print("poller syntax OK")
+PY
 
 printf 'Installing systemd services without starting trading...\n'
 bash "$ROOT/scripts/vps/install-services.sh"
