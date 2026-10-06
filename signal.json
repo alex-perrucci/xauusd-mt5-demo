@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "id": "h1-no-trade-20261006-1701z",
+  "id": "h1-no-trade-20261006-2008z",
   "symbol": "XAUUSD",
   "action": "NO_TRADE",
   "target_ticket": null,
@@ -8,7 +8,7 @@
   "sl": null,
   "tp": null,
   "risk_pct": 0,
-  "created_at": "2026-10-06T17:01:20+00:00",
-  "valid_until": "2026-10-06T17:55:00+00:00",
-  "reason": "No high-quality H1 entry: XAUUSD is rebounding near 4160 resistance while the broader trend remains pressured by historically elevated US Treasury yields; wait for cleaner confirmation."
+  "created_at": "2026-10-06T20:08:00+00:00",
+  "valid_until": "2026-10-06T20:55:00+00:00",
+  "reason": "No clean H1 entry: rebound is testing 4179-4182 resistance after a 4103.5 low; softer USD/yields support gold, but elevated yields and tomorrow's FOMC minutes keep the setup conflicted."
 }
