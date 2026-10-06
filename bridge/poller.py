@@ -183,6 +183,19 @@ def newest_text(paths: list[Path]) -> str:
     return read_text(existing[0][1])
 
 
+def newest_text(paths: list[Path]) -> str:
+    existing = []
+    for path in paths:
+        try:
+            existing.append((path.stat().st_mtime_ns, path))
+        except FileNotFoundError:
+            continue
+    if not existing:
+        return ""
+    existing.sort(reverse=True)
+    return read_text(existing[0][1])
+
+
 def nullable_number(value: str) -> float | None:
     return None if value == "" else float(value)
 
@@ -358,6 +371,24 @@ def main() -> int:
     bridge_path = Path(os.path.expanduser(str(config["bridge_file"])))
     ack_path = Path(os.path.expanduser(str(config["ack_file"])))
     state_file = Path(os.path.expanduser(str(config.get("state_file", bridge_path.with_name("state.txt")))))
+    alternate_bridge_path = (
+        Path(os.path.expanduser(str(config["alternate_bridge_file"])))
+        if config.get("alternate_bridge_file")
+        else None
+    )
+    alternate_ack_path = (
+        Path(os.path.expanduser(str(config["alternate_ack_file"])))
+        if config.get("alternate_ack_file")
+        else None
+    )
+    alternate_state_file = (
+        Path(os.path.expanduser(str(config["alternate_state_file"])))
+        if config.get("alternate_state_file")
+        else None
+    )
+    bridge_paths = [bridge_path] + ([alternate_bridge_path] if alternate_bridge_path else [])
+    ack_paths = [ack_path] + ([alternate_ack_path] if alternate_ack_path else [])
+    state_paths = [state_file] + ([alternate_state_file] if alternate_state_file else [])
     alternate_bridge_path = (
         Path(os.path.expanduser(str(config["alternate_bridge_file"])))
         if config.get("alternate_bridge_file")
