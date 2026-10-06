@@ -72,6 +72,7 @@ KeepPrivate=0
 NewsEnable=0
 
 [Charts]
+ProfileLast=$PROFILE_NAME
 MaxBars=5000
 
 [Experts]
