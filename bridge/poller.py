@@ -150,8 +150,8 @@ def nullable_int(value: str) -> int | None:
 
 def parse_state_line(raw: str) -> dict[str, Any]:
     fields = raw.strip().split("|")
-    if len(fields) != 23 or fields[0] != "1":
-        raise ValueError(f"invalid MT5 state format: expected 23 fields, got {len(fields)}")
+    if len(fields) != 30 or fields[0] != "1":
+        raise ValueError(f"invalid MT5 state format: expected 30 fields, got {len(fields)}")
 
     server_epoch = int(fields[1]) if fields[1] else 0
     server_time = datetime.fromtimestamp(server_epoch, timezone.utc).isoformat() if server_epoch > 0 else None
@@ -184,7 +184,20 @@ def parse_state_line(raw: str) -> dict[str, Any]:
             "sl": nullable_number(fields[20]),
             "tp": nullable_number(fields[21]),
         },
-        "last_signal_id": fields[22] or None,
+        "last_closed_deal": {
+            "ticket": nullable_int(fields[22]),
+            "position_id": nullable_int(fields[23]),
+            "type": fields[24] or None,
+            "reason": fields[25] or None,
+            "price": nullable_number(fields[26]),
+            "profit": nullable_number(fields[27]),
+            "server_time": (
+                datetime.fromtimestamp(int(fields[28]), timezone.utc).isoformat()
+                if fields[28]
+                else None
+            ),
+        },
+        "last_signal_id": fields[29] or None,
     }
 
 
@@ -219,6 +232,7 @@ def structural_fingerprint(state: dict[str, Any]) -> str:
             key: pending.get(key)
             for key in ("count", "type", "ticket", "price", "sl", "tp")
         },
+        "last_closed_deal": state.get("last_closed_deal"),
         "last_signal_id": state.get("last_signal_id"),
         "last_ack": state.get("last_ack"),
     }
