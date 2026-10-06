@@ -89,13 +89,28 @@ void ClearSmallFile(const string file_name)
    WriteSmallFile(file_name,"");
   }
 
+long BrokerUtcOffsetSeconds()
+  {
+   return (long)TimeCurrent()-(long)TimeGMT();
+  }
+
+datetime UtcEpochToBrokerTime(const long utc_epoch)
+  {
+   return (datetime)(utc_epoch+BrokerUtcOffsetSeconds());
+  }
+
+long BrokerTimeToUtcEpoch(const datetime broker_time)
+  {
+   return (long)broker_time-BrokerUtcOffsetSeconds();
+  }
+
 void Acknowledge(const string id,const string status,const string message)
   {
    string safe_message=message;
    StringReplace(safe_message,"|","/");
    StringReplace(safe_message,"\r"," ");
    StringReplace(safe_message,"\n"," ");
-   string line=id+"|"+status+"|"+IntegerToString((int)TimeCurrent())+"|"+safe_message;
+   string line=id+"|"+status+"|"+IntegerToString((int)TimeGMT())+"|"+safe_message;
    WriteSmallFile(ACK_FILE,line);
   }
 
@@ -548,7 +563,7 @@ bool PlacePending(const BridgeSignal &signal,const GuardConfig &guard,string &me
    if((expiration_modes & SYMBOL_EXPIRATION_SPECIFIED)==SYMBOL_EXPIRATION_SPECIFIED)
      {
       request.type_time=ORDER_TIME_SPECIFIED;
-      request.expiration=(datetime)signal.valid_epoch;
+      request.expiration=UtcEpochToBrokerTime(signal.valid_epoch);
      }
    else
      {
@@ -605,7 +620,7 @@ void CancelExpiredPending()
       ClearSmallFile(PENDING_META_FILE);
       return;
      }
-   if((long)TimeCurrent()<=valid_epoch)
+   if((long)TimeGMT()<=valid_epoch)
       return;
 
    GuardConfig guard={};
@@ -847,7 +862,7 @@ void WriteState()
    string bid=has_tick ? DoubleToString(tick.bid,8) : "";
    string ask=has_tick ? DoubleToString(tick.ask,8) : "";
    string line=
-      "1|"+(string)((long)TimeCurrent())+
+      "1|"+(string)((long)TimeGMT())+
       "|"+IntegerToString(connected)+
       "|"+IntegerToString(demo)+
       "|"+IntegerToString(trade_allowed)+
@@ -894,7 +909,7 @@ void ProcessBridge()
       FinishSignal(signal.id,"BLOCKED","unknown action");
       return;
      }
-   if(signal.valid_epoch<=0 || (long)TimeCurrent()>signal.valid_epoch)
+   if(signal.valid_epoch<=0 || (long)TimeGMT()>signal.valid_epoch)
      {
       FinishSignal(signal.id,"BLOCKED","signal expired");
       return;
