@@ -17,4 +17,7 @@ CONFIG='/home/perrucci/.mt5/drive_c/xauusd/terminal.ini'
 [[ -f "$CONFIG" ]] || { echo "terminal config missing: $CONFIG" >&2; exit 1; }
 
 CONFIG_WIN="$($WINEPATH -w "$CONFIG")"
-exec "$WINE" "$TERMINAL" /portable "/config:$CONFIG_WIN"
+# This Wine installation uses MetaTrader's standard AppData data directory.
+# Do not force /portable from Program Files; the EA and bridge are installed
+# into the resolved AppData/MetaQuotes/Terminal/<id> directory instead.
+exec "$WINE" "$TERMINAL" "/config:$CONFIG_WIN"
