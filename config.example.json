@@ -8,5 +8,8 @@
   "state_repo_path": "runtime/state.json",
   "bridge_file": "/home/perrucci/.mt5/drive_c/Program Files/MetaTrader 5/MQL5/Files/xauusd/signal.txt",
   "ack_file": "/home/perrucci/.mt5/drive_c/Program Files/MetaTrader 5/MQL5/Files/xauusd/ack.txt",
-  "state_file": "/home/perrucci/.mt5/drive_c/Program Files/MetaTrader 5/MQL5/Files/xauusd/state.txt"
+  "state_file": "/home/perrucci/.mt5/drive_c/Program Files/MetaTrader 5/MQL5/Files/xauusd/state.txt",
+  "alternate_bridge_file": "/home/perrucci/.mt5/drive_c/Program Files/MetaTrader 5/MQL5/Files/xauusd/signal.txt",
+  "alternate_ack_file": "/home/perrucci/.mt5/drive_c/Program Files/MetaTrader 5/MQL5/Files/xauusd/ack.txt",
+  "alternate_state_file": "/home/perrucci/.mt5/drive_c/Program Files/MetaTrader 5/MQL5/Files/xauusd/state.txt"
 }
