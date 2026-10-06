@@ -437,6 +437,7 @@ def main() -> int:
     branch = current_branch()
 
     last_published = ""
+    last_rejected_signal = ""
     last_ack = ""
     last_state_fingerprint = ""
     last_state_push = 0.0
@@ -457,15 +458,25 @@ def main() -> int:
             else:
                 signal = load_json(signal_path)
 
-            action, created_epoch, valid_epoch = validate_signal(signal, max_risk_pct)
-            signal_id = str(signal["id"])
+            signal_id = str(signal.get("id", "")).strip()
 
-            if signal_id != last_published:
-                bridge_line = to_bridge_line(signal, created_epoch, valid_epoch)
-                for target in bridge_paths:
-                    atomic_write(target, bridge_line)
-                last_published = signal_id
-                print(f"published signal id={signal_id} action={action}", flush=True)
+            try:
+                action, created_epoch, valid_epoch = validate_signal(signal, max_risk_pct)
+            except ValueError as exc:
+                if signal_id != last_rejected_signal:
+                    print(
+                        f"rejected signal id={signal_id or '<missing>'}: {exc}",
+                        flush=True,
+                    )
+                    last_rejected_signal = signal_id
+            else:
+                last_rejected_signal = ""
+                if signal_id != last_published:
+                    bridge_line = to_bridge_line(signal, created_epoch, valid_epoch)
+                    for target in bridge_paths:
+                        atomic_write(target, bridge_line)
+                    last_published = signal_id
+                    print(f"published signal id={signal_id} action={action}", flush=True)
 
             ack_raw = newest_text(ack_paths)
             if ack_raw and ack_raw != last_ack:
