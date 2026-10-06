@@ -21,7 +21,8 @@ if [[ -x /opt/wine-devel/bin/wine ]]; then
 fi
 command -v Xvfb >/dev/null 2>&1 && ok "Xvfb present" || fail "Xvfb missing"
 [[ -f "$MT5_DIR/terminal64.exe" ]] && ok "MT5 terminal present" || fail "MT5 terminal missing"
-[[ -f "$MT5_DIR/metaeditor64.exe" ]] && ok "MetaEditor present" || fail "MetaEditor missing"
+METAEDITOR="$(find "$MT5_DIR" -maxdepth 2 -type f -iname 'metaeditor64.exe' -print -quit)"
+[[ -n "$METAEDITOR" ]] && ok "MetaEditor present: $METAEDITOR" || fail "MetaEditor missing"
 [[ -f "$EA_EX5" ]] && ok "SignalBridge.ex5 compiled" || fail "SignalBridge.ex5 missing"
 [[ -f /etc/xauusd-mt5-demo/mt5.env ]] && ok "demo credential file present" || warn "demo credential file not configured yet"
 [[ -f "$PREFIX/drive_c/xauusd/terminal.ini" ]] && ok "MT5 startup config rendered" || warn "terminal.ini not rendered yet"
@@ -39,6 +40,19 @@ if [[ -f "$BRIDGE_DIR/ack.txt" ]]; then
   ok "latest MT5 ack: $(tail -n 1 "$BRIDGE_DIR/ack.txt" 2>/dev/null)"
 else
   warn "no MT5 ack yet"
+fi
+
+if [[ -f "$BRIDGE_DIR/state.txt" ]]; then
+  ok "MT5 state export present"
+  tail -n 1 "$BRIDGE_DIR/state.txt" 2>/dev/null | sed 's/^/     /'
+else
+  warn "no MT5 state export yet"
+fi
+
+if [[ -f "$ROOT/runtime/state.json" ]]; then
+  ok "GitHub runtime state file present"
+else
+  warn "runtime/state.json missing"
 fi
 
 df -h / | tail -n 1
