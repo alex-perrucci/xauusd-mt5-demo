@@ -93,20 +93,35 @@ sleep 2
 printf 'EA compiled: %s\n' "$EA_EX5"
 print_compile_log || true
 
+DATA_DIR="$(bash "$ROOT/scripts/vps/resolve-data-dir.sh")"
+RUNTIME_EA_DIR="$DATA_DIR/MQL5/Experts/XAUUSD"
+RUNTIME_BRIDGE_DIR="$DATA_DIR/MQL5/Files/xauusd"
+
+printf 'MT5 data directory: %s\n' "$DATA_DIR"
+printf 'Installing EA into the actual MT5 data directory...\n'
+install -d -o perrucci -g perrucci -m 0755 "$RUNTIME_EA_DIR"
+install -d -o perrucci -g perrucci -m 0700 "$RUNTIME_BRIDGE_DIR"
+install -m 0644 -o perrucci -g perrucci "$ROOT/ea/SignalBridge.mq5" "$RUNTIME_EA_DIR/SignalBridge.mq5"
+install -m 0644 -o perrucci -g perrucci "$EA_EX5" "$RUNTIME_EA_DIR/SignalBridge.ex5"
+
 printf 'Preparing Linux bridge config...\n'
-python3 - "$ROOT/config.example.json" "$ROOT/config.json" <<'PY'
+python3 - "$ROOT/config.example.json" "$ROOT/config.json" "$DATA_DIR" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 example_path = Path(sys.argv[1])
 config_path = Path(sys.argv[2])
+data_dir = Path(sys.argv[3])
 defaults = json.loads(example_path.read_text(encoding="utf-8"))
 current = {}
 if config_path.exists():
     current = json.loads(config_path.read_text(encoding="utf-8"))
 merged = {**defaults, **current}
-# V2 state sync must be explicitly enabled after the VPS deploy key has write access.
+bridge_dir = data_dir / "MQL5" / "Files" / "xauusd"
+merged["bridge_file"] = str(bridge_dir / "signal.txt")
+merged["ack_file"] = str(bridge_dir / "ack.txt")
+merged["state_file"] = str(bridge_dir / "state.txt")
 merged["auto_state_push"] = bool(current.get("auto_state_push", defaults.get("auto_state_push", False)))
 config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
 PY
@@ -123,7 +138,8 @@ install -m 0600 "$ROOT/deploy/mt5.env.example" /etc/xauusd-mt5-demo/mt5.env.exam
 printf '\nEA/runtime setup complete. Nothing is trading yet.\n'
 printf 'Wine: '; "$WINE" --version
 printf 'MT5: %s\n' "$MT5_DIR/terminal64.exe"
-printf 'EA:  %s\n' "$EA_EX5"
+printf 'EA compile output: %s\n' "$EA_EX5"
+printf 'EA runtime copy:   %s\n' "$RUNTIME_EA_DIR/SignalBridge.ex5"
 printf 'Disk:\n'; df -h /
 printf '\nNext: copy /etc/xauusd-mt5-demo/mt5.env.example to mt5.env, fill DEMO credentials, then run:\n'
 printf '  sudo bash %s/scripts/vps/configure-demo.sh\n' "$ROOT"
