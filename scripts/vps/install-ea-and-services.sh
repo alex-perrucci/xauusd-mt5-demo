@@ -34,49 +34,52 @@ install -m 0644 -o perrucci -g perrucci "$ROOT/ea/SignalBridge.mq5" "$EA_SRC"
 rm -f "$EA_EX5" "$COMPILE_LOG"
 
 printf 'Compiling SignalBridge with MetaEditor...\n'
-EA_SRC_WIN="$(sudo -u perrucci env HOME=/home/perrucci WINEPREFIX="$PREFIX" "$WINEPATH" -w "$EA_SRC")"
-MQL5_WIN="$(sudo -u perrucci env HOME=/home/perrucci WINEPREFIX="$PREFIX" "$WINEPATH" -w "$MT5_DIR/MQL5")"
 
-printf '  source: %s\n' "$EA_SRC_WIN"
-printf '  include: %s\n' "$MQL5_WIN"
+# MetaEditor under Wine is much more reliable in portable mode when launched
+# from the MT5 installation directory and given an MQL5-relative source path.
+REL_SRC='MQL5\\Experts\\XAUUSD\\SignalBridge.mq5'
+rm -f "$EA_EX5" "$COMPILE_LOG"
 
-# MetaEditor command-line parsing is strict. Keep the quotes inside the actual
-# Windows-style argument, matching /compile:"path" /include:"path" /log.
 set +e
-timeout --signal=TERM --kill-after=10s 120s \
-  sudo -u perrucci env \
-    HOME=/home/perrucci \
-    WINEPREFIX="$PREFIX" \
-    WINEDEBUG=-all \
-    PATH=/opt/wine-devel/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    xvfb-run -a "$WINE" "$METAEDITOR" \
-      "/compile:\"$EA_SRC_WIN\"" \
-      "/include:\"$MQL5_WIN\"" \
-      /log
+(
+  cd "$MT5_DIR"
+  timeout --signal=TERM --kill-after=10s 120s \
+    sudo -u perrucci env \
+      HOME=/home/perrucci \
+      WINEPREFIX="$PREFIX" \
+      WINEDEBUG=-all \
+      PATH=/opt/wine-devel/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+      xvfb-run -a "$WINE" "$(basename "$METAEDITOR")" \
+        /portable \
+        "/compile:$REL_SRC" \
+        /log
+)
 compile_rc=$?
 set -e
 
-# Give MetaEditor/Wine a moment to flush the .ex5 and .log before stopping its wineserver.
-sleep 3
+# MetaEditor may return before Wine has flushed the compiler output.
+for _ in $(seq 1 30); do
+  [[ -f "$COMPILE_LOG" || -f "$EA_EX5" ]] && break
+  sleep 1
+done
 
-if [[ ! -f "$EA_EX5" ]]; then
-  # Some MetaEditor builds can place command-line output elsewhere. Locate it
-  # before declaring failure and copy only an exact SignalBridge.ex5 match.
-  FOUND_EX5="$(find "$MT5_DIR/MQL5" -type f -name 'SignalBridge.ex5' -print -quit 2>/dev/null || true)"
-  if [[ -n "$FOUND_EX5" && "$FOUND_EX5" != "$EA_EX5" ]]; then
-    echo "MetaEditor produced EX5 at unexpected path: $FOUND_EX5"
-    install -m 0644 -o perrucci -g perrucci "$FOUND_EX5" "$EA_EX5"
+print_compile_log() {
+  [[ -f "$COMPILE_LOG" ]] || return 0
+  echo "----- MetaEditor compile log -----"
+  if command -v iconv >/dev/null 2>&1; then
+    iconv -f UTF-16LE -t UTF-8 "$COMPILE_LOG" 2>/dev/null | tr -d '\r' || cat "$COMPILE_LOG"
+  else
+    cat "$COMPILE_LOG"
   fi
-fi
+  echo "----------------------------------"
+}
 
 if [[ ! -f "$EA_EX5" ]]; then
   echo "EA compilation failed (rc=$compile_rc); no $EA_EX5 was produced" >&2
-  echo "MetaEditor logs found:" >&2
-  find "$MT5_DIR/MQL5" -maxdepth 6 -type f \( -iname 'SignalBridge*.log' -o -iname '*.log' \) -printf '  %p\n' 2>/dev/null | tail -n 30 >&2 || true
   if [[ -f "$COMPILE_LOG" ]]; then
-    echo "----- MetaEditor compile log -----" >&2
-    cat "$COMPILE_LOG" >&2 || true
-    echo "----------------------------------" >&2
+    print_compile_log >&2
+  else
+    echo "MetaEditor produced no compile log either." >&2
   fi
   echo "SignalBridge outputs found:" >&2
   find "$MT5_DIR/MQL5" -maxdepth 6 -type f -iname 'SignalBridge*' -printf '  %p\n' 2>/dev/null >&2 || true
@@ -88,9 +91,7 @@ sudo -u perrucci env HOME=/home/perrucci WINEPREFIX="$PREFIX" "$WINESERVER" -k >
 sleep 2
 
 printf 'EA compiled: %s\n' "$EA_EX5"
-if [[ -f "$COMPILE_LOG" ]]; then
-  tail -n 30 "$COMPILE_LOG" || true
-fi
+print_compile_log || true
 
 printf 'Preparing Linux bridge config...\n'
 python3 - "$ROOT/config.example.json" "$ROOT/config.json" <<'PY'
