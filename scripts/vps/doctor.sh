@@ -58,7 +58,9 @@ fi
 
 if [[ -n "$STATE_FILE" ]]; then
   ok "MT5 state export present"
-  tail -n 1 "$STATE_FILE" 2>/dev/null | sed 's/^/     /'
+  head -n 1 "$STATE_FILE" 2>/dev/null | sed 's/^/     header: /'
+  grep -c '^P|' "$STATE_FILE" 2>/dev/null | sed 's/^/     managed positions: /' || true
+  grep -c '^O|' "$STATE_FILE" 2>/dev/null | sed 's/^/     managed pending: /' || true
 else
   warn "no MT5 state export yet"
 fi
