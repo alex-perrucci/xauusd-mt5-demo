@@ -1,14 +1,14 @@
 {
-  "ask": 4156.4,
-  "bid": 4156.09,
-  "captured_at": "2026-10-06T10:32:10.268618+00:00",
+  "ask": 4157.74,
+  "bid": 4157.41,
+  "captured_at": "2026-10-06T10:35:19.917086+00:00",
   "connected": true,
   "demo": true,
   "last_ack": {
-    "message": "signal expired",
-    "server_time": "2026-10-06T13:29:37+00:00",
-    "signal_id": "status-v2-20261006-102930z",
-    "status": "BLOCKED"
+    "message": "STATUS acknowledged",
+    "server_time": "2026-10-06T10:34:48+00:00",
+    "signal_id": "status-v2-utcfix-20261006-1034z",
+    "status": "OK"
   },
   "last_closed_deal": {
     "position_id": null,
@@ -19,7 +19,7 @@
     "ticket": null,
     "type": null
   },
-  "last_signal_id": "status-v2-20261006-102930z",
+  "last_signal_id": "status-v2-utcfix-20261006-1034z",
   "managed_pending_order": {
     "count": 0,
     "price": null,
@@ -39,7 +39,7 @@
     "volume": null
   },
   "schema_version": 1,
-  "server_time": "2026-10-06T13:31:58+00:00",
+  "server_time": "2026-10-06T10:35:19+00:00",
   "symbol": "XAUUSD",
   "trade_allowed": true
 }
