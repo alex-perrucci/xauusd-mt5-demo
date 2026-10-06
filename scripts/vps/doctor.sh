@@ -57,5 +57,35 @@ else
   warn "runtime/state.json missing"
 fi
 
+printf '\nMT5 runtime diagnostics:\n'
+TERMINAL_LOG="$(find "$MT5_DIR/logs" -type f -name '*.log' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)"
+MQL_LOG="$(find "$MT5_DIR/MQL5/Logs" "$DATA_DIR/MQL5/Logs" -type f -name '*.log' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)"
+
+if [[ -n "$TERMINAL_LOG" ]]; then
+  ok "latest terminal log: $TERMINAL_LOG"
+  if command -v iconv >/dev/null 2>&1; then
+    iconv -f UTF-16LE -t UTF-8 "$TERMINAL_LOG" 2>/dev/null \
+      | tr -d '\r' \
+      | grep -Ei 'SignalBridge|expert|XAUUSD|login|authorization|server|error|failed|cannot|invalid' \
+      | tail -n 80 \
+      | sed 's/^/     /' || true
+  fi
+else
+  warn "no terminal log found"
+fi
+
+if [[ -n "$MQL_LOG" ]]; then
+  ok "latest MQL5 log: $MQL_LOG"
+  if command -v iconv >/dev/null 2>&1; then
+    iconv -f UTF-16LE -t UTF-8 "$MQL_LOG" 2>/dev/null \
+      | tr -d '\r' \
+      | grep -Ei 'SignalBridge|expert|XAUUSD|error|failed|cannot|invalid' \
+      | tail -n 80 \
+      | sed 's/^/     /' || true
+  fi
+else
+  warn "no MQL5 expert log found"
+fi
+
 df -h / | tail -n 1
 exit "$FAILED"
