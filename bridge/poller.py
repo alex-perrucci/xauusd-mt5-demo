@@ -118,19 +118,49 @@ def atomic_write(path: Path, content: str) -> None:
             pass
 
 
-def run_git(*args: str, timeout: int = 45, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_git(
+    *args: str,
+    timeout: int = 45,
+    check: bool = True,
+    input_text: str | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         ["git", "-C", str(ROOT), *args],
         check=check,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        input=input_text,
+        env=env,
         timeout=timeout,
     )
 
 
-def git_pull() -> None:
-    run_git("pull", "--rebase", "--autostash")
+def current_branch() -> str:
+    branch = run_git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    if not branch or branch == "HEAD":
+        raise RuntimeError("bridge requires a named Git branch")
+    return branch
+
+
+def fetch_branch(branch: str) -> None:
+    run_git(
+        "fetch",
+        "origin",
+        f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+        timeout=60,
+    )
+
+
+def load_remote_signal(signal_path: Path, branch: str) -> dict[str, Any]:
+    fetch_branch(branch)
+    rel = signal_path.relative_to(ROOT).as_posix()
+    result = run_git("show", f"origin/{branch}:{rel}")
+    return json.loads(result.stdout)
 
 
 def read_text(path: Path) -> str:
@@ -241,32 +271,65 @@ def structural_fingerprint(state: dict[str, Any]) -> str:
     ).hexdigest()
 
 
-def publish_repo_state(repo_path: Path, payload: dict[str, Any]) -> None:
-    git_pull()
-    atomic_write(repo_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    rel = repo_path.relative_to(ROOT)
-    run_git("add", str(rel))
+def publish_repo_state(repo_path: Path, payload: dict[str, Any], branch: str) -> None:
+    rel = repo_path.relative_to(ROOT).as_posix()
+    content = json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
-    diff = run_git("diff", "--cached", "--quiet", check=False)
-    if diff.returncode == 0:
-        return
-    if diff.returncode != 1:
-        raise RuntimeError(diff.stdout.strip() or "git diff --cached failed")
+    for attempt in range(2):
+        fetch_branch(branch)
+        remote_ref = f"origin/{branch}"
+        parent = run_git("rev-parse", remote_ref).stdout.strip()
 
-    run_git(
-        "-c", "user.name=xauusd-vps",
-        "-c", "user.email=xauusd-vps@users.noreply.github.com",
-        "commit", "-m", "runtime: update MT5 demo state",
-    )
-    branch = run_git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-    if not branch or branch == "HEAD":
-        raise RuntimeError("cannot publish runtime state from detached HEAD")
+        blob = run_git("hash-object", "-w", "--stdin", input_text=content).stdout.strip()
 
-    pushed = run_git("push", "origin", f"HEAD:{branch}", timeout=60, check=False)
-    if pushed.returncode != 0:
-        run_git("pull", "--rebase", "--autostash", timeout=60)
-        pushed = run_git("push", "origin", f"HEAD:{branch}", timeout=60, check=False)
-        if pushed.returncode != 0:
+        fd, index_path = tempfile.mkstemp(prefix="xauusd-git-index.")
+        os.close(fd)
+        try:
+            os.unlink(index_path)
+            env = {"GIT_INDEX_FILE": index_path}
+            run_git("read-tree", remote_ref, extra_env=env)
+            run_git(
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "100644",
+                blob,
+                rel,
+                extra_env=env,
+            )
+            tree = run_git("write-tree", extra_env=env).stdout.strip()
+        finally:
+            try:
+                os.unlink(index_path)
+            except FileNotFoundError:
+                pass
+
+        commit_env = {
+            "GIT_AUTHOR_NAME": "xauusd-vps",
+            "GIT_AUTHOR_EMAIL": "xauusd-vps@users.noreply.github.com",
+            "GIT_COMMITTER_NAME": "xauusd-vps",
+            "GIT_COMMITTER_EMAIL": "xauusd-vps@users.noreply.github.com",
+        }
+        commit = run_git(
+            "commit-tree",
+            tree,
+            "-p",
+            parent,
+            "-m",
+            "runtime: update MT5 demo state",
+            extra_env=commit_env,
+        ).stdout.strip()
+
+        pushed = run_git(
+            "push",
+            "origin",
+            f"{commit}:refs/heads/{branch}",
+            timeout=60,
+            check=False,
+        )
+        if pushed.returncode == 0:
+            return
+        if attempt == 1:
             raise RuntimeError(pushed.stdout.strip() or "git push failed")
 
 
@@ -288,6 +351,7 @@ def main() -> int:
     max_risk_pct = min(0.5, float(config.get("max_risk_pct", 0.5)))
     auto_git_pull = bool(config.get("auto_git_pull", True))
     auto_state_push = bool(config.get("auto_state_push", False))
+    branch = current_branch()
 
     last_published = ""
     last_ack = ""
@@ -301,9 +365,13 @@ def main() -> int:
     while True:
         try:
             if auto_git_pull:
-                git_pull()
-
-            signal = load_json(signal_path)
+                try:
+                    signal = load_remote_signal(signal_path, branch)
+                except Exception as exc:
+                    print(f"WARN remote signal fetch failed, using local copy: {exc}", flush=True)
+                    signal = load_json(signal_path)
+            else:
+                signal = load_json(signal_path)
             action, created_epoch, valid_epoch = validate_signal(signal, max_risk_pct)
             signal_id = str(signal["id"])
 
@@ -326,7 +394,7 @@ def main() -> int:
                 changed = fp != last_state_fingerprint
                 heartbeat_due = now_monotonic - last_state_push >= state_push_seconds
                 if changed or heartbeat_due:
-                    publish_repo_state(state_repo_path, state)
+                    publish_repo_state(state_repo_path, state, branch)
                     last_state_fingerprint = fp
                     last_state_push = now_monotonic
                     print("published MT5 state " + ("(change)" if changed else "(heartbeat)"), flush=True)
