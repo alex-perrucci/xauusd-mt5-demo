@@ -122,6 +122,10 @@ bridge_dir = data_dir / "MQL5" / "Files" / "xauusd"
 merged["bridge_file"] = str(bridge_dir / "signal.txt")
 merged["ack_file"] = str(bridge_dir / "ack.txt")
 merged["state_file"] = str(bridge_dir / "state.txt")
+portable_bridge_dir = Path("/home/perrucci/.mt5/drive_c/Program Files/MetaTrader 5/MQL5/Files/xauusd")
+merged["alternate_bridge_file"] = str(portable_bridge_dir / "signal.txt")
+merged["alternate_ack_file"] = str(portable_bridge_dir / "ack.txt")
+merged["alternate_state_file"] = str(portable_bridge_dir / "state.txt")
 merged["auto_state_push"] = bool(current.get("auto_state_push", defaults.get("auto_state_push", False)))
 config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
 PY
