@@ -1,28 +1,51 @@
-# XAUUSD MT5 Demo Bridge
+# XAUUSD MT5 Demo Bridge V2
 
 Demo-only autonomous experiment:
 
 `ChatGPT Scheduler -> GitHub signal.json -> Linux poller -> MQL5 file sandbox -> MT5 Expert Advisor -> demo broker`
 
-There is **no Windows Python** and no `MetaTrader5` Python package. MT5 is the only Windows application running under Wine. Trade execution lives natively inside the MQL5 Expert Advisor.
+and back:
+
+`MT5 state.txt -> Linux poller -> GitHub runtime/state.json -> ChatGPT Scheduler`
+
+There is no Windows Python and no MetaTrader5 Python package. MT5 is the only Windows application under Wine. The Linux poller only moves validated commands and sanitized state.
 
 ## Safety invariants
 
-The EA enforces these locally, independently of the model and GitHub:
+The EA enforces these locally, independently of ChatGPT and GitHub:
 
-- account must be `DEMO`;
+- account must be DEMO;
 - expected login and server must match the local guard;
 - logical instrument is XAUUSD only;
-- hard absolute risk cap: 0.5% equity per new trade;
-- mandatory SL and TP for BUY/SELL;
-- live reward/risk must be at least 2.0;
+- hard risk cap: 0.5% equity;
+- hard automated volume cap: 0.01 lot;
+- mandatory SL and TP for entries;
+- minimum live reward/risk: 2.0;
 - spread cap;
-- no position stacking on the broker symbol;
-- persistent signal-id deduplication;
+- only one XAUUSD exposure at a time, including pending orders;
+- signal-id deduplication;
 - expired signals are blocked;
-- `OrderCheck()` before `OrderSend()`;
-- CLOSE/MODIFY affect only positions created with the configured magic number;
-- no credentials are stored in Git.
+- pending orders are cancelled at expiry when the broker cannot enforce the expiry server-side;
+- OrderCheck() runs before OrderSend();
+- CLOSE/MODIFY/CANCEL only act on the configured magic number;
+- credentials, account login, server name and balance are never written to runtime/state.json.
+
+## Supported actions
+
+Schema V2 supports:
+
+- `NO_TRADE`
+- `HOLD`
+- `STATUS`
+- `BUY`
+- `SELL`
+- `BUY_STOP`
+- `SELL_STOP`
+- `CLOSE`
+- `CANCEL`
+- `MODIFY`
+
+BUY/SELL are market orders. BUY_STOP/SELL_STOP require `entry`, `sl`, `tp`, positive `risk_pct`, timezone-aware `created_at`, and `valid_until`.
 
 ## VPS layout
 
@@ -32,53 +55,39 @@ The EA enforces these locally, independently of the model and GitHub:
 - local secrets: `/etc/xauusd-mt5-demo/mt5.env`
 - EA: `MQL5/Experts/XAUUSD/SignalBridge.ex5`
 - file bridge: `MQL5/Files/xauusd/`
+- sanitized remote state: `runtime/state.json`
 
-## Clean installation
+## Deploy V2 on the existing VPS
 
-From the VPS:
+The VPS already uses a dedicated deploy key. For bidirectional state sync, that key must be able to push to this repository. GitHub deploy keys support an **Allow write access** option. Do not put a PAT or MT5 password in the repository.
+
+After the key has write access:
 
 ```bash
+sudo -iu perrucci git -C /opt/xauusd-mt5-demo fetch origin
+sudo -iu perrucci git -C /opt/xauusd-mt5-demo checkout codex/autonomous-bridge-v2
 sudo -iu perrucci git -C /opt/xauusd-mt5-demo pull --ff-only
-sudo bash /opt/xauusd-mt5-demo/scripts/vps/reset-setup.sh
-```
-
-`reset-setup.sh` intentionally removes only the previous `/home/perrucci/.mt5` runtime and `/etc/xauusd-mt5-demo`, pins the supported Wine build, installs MT5, compiles the MQL5 EA, and installs systemd units. It does **not** start trading.
-
-Then configure the demo account locally:
-
-```bash
-sudo cp /etc/xauusd-mt5-demo/mt5.env.example /etc/xauusd-mt5-demo/mt5.env
-sudo chmod 600 /etc/xauusd-mt5-demo/mt5.env
-sudoedit /etc/xauusd-mt5-demo/mt5.env
+sudo bash /opt/xauusd-mt5-demo/scripts/vps/install-ea-and-services.sh
 sudo bash /opt/xauusd-mt5-demo/scripts/vps/configure-demo.sh
+sudo bash /opt/xauusd-mt5-demo/scripts/vps/doctor.sh
 ```
 
-Use the exact demo login, demo server and broker symbol shown by the broker. Never put the password in GitHub.
+The install script preserves the existing local `config.json` values while adding new V2 defaults.
 
-## Runtime services
+## State synchronization
 
-- `xauusd-xvfb.service` — private virtual X display;
-- `xauusd-mt5.service` — MT5 in `/portable` mode, with the EA loaded via startup config;
-- `xauusd-poller.service` — Linux-only Git poller that converts `signal.json` into the EA bridge file.
+The EA writes a local state snapshot every second. The poller pushes a sanitized state to `runtime/state.json`:
 
-Useful checks:
+- immediately when position/pending/ack state changes;
+- otherwise at most once per hour as a heartbeat.
+
+Price changes alone do not cause continuous Git commits.
+
+## Useful checks
 
 ```bash
 sudo bash /opt/xauusd-mt5-demo/scripts/vps/doctor.sh
 sudo journalctl -u xauusd-mt5 -u xauusd-poller -n 100 --no-pager
 ```
 
-## Signal contract
-
-GitHub `signal.json` supports:
-
-- `NO_TRADE`
-- `BUY`
-- `SELL`
-- `HOLD`
-- `CLOSE`
-- `MODIFY`
-
-BUY/SELL are market-only and require positive `risk_pct`, `sl`, `tp`, timezone-aware `created_at`, and `valid_until`.
-
-This repository is for a demo experiment. It makes no profitability claim and should not be pointed at a live account without a separate design and review.
+This repository is for a demo experiment only. It makes no profitability claim and is deliberately blocked from running on a live account.
