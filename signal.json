@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "id": "h1-no-trade-20261006-2100z",
+  "id": "h1-no-trade-20261006-2209z",
   "symbol": "XAUUSD",
   "action": "NO_TRADE",
   "target_ticket": null,
@@ -8,7 +8,7 @@
   "sl": null,
   "tp": null,
   "risk_pct": 0,
-  "created_at": "2026-10-06T21:00:00+00:00",
-  "valid_until": "2026-10-06T21:55:00+00:00",
-  "reason": "No clean H1 entry: gold is supported by a softer DXY and easing 10Y yield, but yields remain historically elevated and Oct 7 FOMC minutes are a near-term catalyst. No verified >=2R setup at this review."
+  "created_at": "2026-10-06T22:09:00+00:00",
+  "valid_until": "2026-10-06T22:55:00+00:00",
+  "reason": "No clean >=2R H1 setup: XAUUSD remains in a rebound near 4166 after the two-month-low recovery, with softer USD/yields supportive but 10Y yields still historically elevated and Oct 7 FOMC minutes a near-term catalyst."
 }
