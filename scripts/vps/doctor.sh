@@ -7,6 +7,7 @@ MT5_DIR="$PREFIX/drive_c/Program Files/MetaTrader 5"
 DATA_DIR="$(bash "$ROOT/scripts/vps/resolve-data-dir.sh" 2>/dev/null || true)"
 EA_EX5="$DATA_DIR/MQL5/Experts/XAUUSD/SignalBridge.ex5"
 BRIDGE_DIR="$DATA_DIR/MQL5/Files/xauusd"
+PORTABLE_BRIDGE_DIR="$MT5_DIR/MQL5/Files/xauusd"
 FAILED=0
 
 ok(){ printf 'OK   %s\n' "$*"; }
@@ -38,15 +39,26 @@ for svc in xauusd-xvfb xauusd-mt5 xauusd-poller; do
   fi
 done
 
-if [[ -f "$BRIDGE_DIR/ack.txt" ]]; then
-  ok "latest MT5 ack: $(tail -n 1 "$BRIDGE_DIR/ack.txt" 2>/dev/null)"
+ACK_FILE=""
+STATE_FILE=""
+for candidate in "$BRIDGE_DIR/ack.txt" "$PORTABLE_BRIDGE_DIR/ack.txt"; do
+  [[ -f "$candidate" ]] || continue
+  if [[ -z "$ACK_FILE" || "$candidate" -nt "$ACK_FILE" ]]; then ACK_FILE="$candidate"; fi
+done
+for candidate in "$BRIDGE_DIR/state.txt" "$PORTABLE_BRIDGE_DIR/state.txt"; do
+  [[ -f "$candidate" ]] || continue
+  if [[ -z "$STATE_FILE" || "$candidate" -nt "$STATE_FILE" ]]; then STATE_FILE="$candidate"; fi
+done
+
+if [[ -n "$ACK_FILE" ]]; then
+  ok "latest MT5 ack: $(tail -n 1 "$ACK_FILE" 2>/dev/null)"
 else
   warn "no MT5 ack yet"
 fi
 
-if [[ -f "$BRIDGE_DIR/state.txt" ]]; then
+if [[ -n "$STATE_FILE" ]]; then
   ok "MT5 state export present"
-  tail -n 1 "$BRIDGE_DIR/state.txt" 2>/dev/null | sed 's/^/     /'
+  tail -n 1 "$STATE_FILE" 2>/dev/null | sed 's/^/     /'
 else
   warn "no MT5 state export yet"
 fi
