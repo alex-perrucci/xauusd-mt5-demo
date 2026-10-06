@@ -6,7 +6,9 @@ ENV_FILE=/etc/xauusd-mt5-demo/mt5.env
 PREFIX=/home/perrucci/.mt5
 MT5_DIR="$PREFIX/drive_c/Program Files/MetaTrader 5"
 TERMINAL_CFG="$PREFIX/drive_c/xauusd/terminal.ini"
-BRIDGE_DIR="$MT5_DIR/MQL5/Files/xauusd"
+DATA_DIR="$(bash "$ROOT/scripts/vps/resolve-data-dir.sh")"
+BRIDGE_DIR="$DATA_DIR/MQL5/Files/xauusd"
+RUNTIME_EA="$DATA_DIR/MQL5/Experts/XAUUSD/SignalBridge.ex5"
 GUARD_FILE="$BRIDGE_DIR/guard.txt"
 
 [[ ${EUID} -eq 0 ]] || { echo "run as root" >&2; exit 1; }
@@ -51,6 +53,11 @@ for value in "$MT5_SERVER" "$BROKER_SYMBOL" "$STARTUP_SYMBOL"; do
 done
 
 install -d -o perrucci -g perrucci -m 0700 "$(dirname "$TERMINAL_CFG")"
+[[ -f "$RUNTIME_EA" ]] || {
+  echo "runtime EA missing: $RUNTIME_EA" >&2
+  echo "run install-ea-and-services.sh first" >&2
+  exit 1
+}
 install -d -o perrucci -g perrucci -m 0700 "$BRIDGE_DIR"
 
 umask 077
@@ -93,3 +100,5 @@ sleep 5
 printf '\nServices:\n'
 systemctl --no-pager --full status xauusd-xvfb.service xauusd-mt5.service xauusd-poller.service || true
 printf '\nNo credentials were written to Git. MT5 config: %s\n' "$TERMINAL_CFG"
+printf 'MT5 data directory: %s\n' "$DATA_DIR"
+printf 'Runtime EA: %s\n' "$RUNTIME_EA"
