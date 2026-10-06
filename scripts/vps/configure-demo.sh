@@ -12,6 +12,9 @@ PORTABLE_BRIDGE_DIR="$MT5_DIR/MQL5/Files/xauusd"
 RUNTIME_EA="$DATA_DIR/MQL5/Experts/XAUUSD/SignalBridge.ex5"
 GUARD_FILE="$BRIDGE_DIR/guard.txt"
 PORTABLE_GUARD_FILE="$PORTABLE_BRIDGE_DIR/guard.txt"
+PROFILE_NAME=XAUUSDBridge
+PORTABLE_PROFILE_DIR="$MT5_DIR/MQL5/Profiles/Charts/$PROFILE_NAME"
+DATA_PROFILE_DIR="$DATA_DIR/MQL5/Profiles/Charts/$PROFILE_NAME"
 
 [[ ${EUID} -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 [[ -f "$ENV_FILE" ]] || {
@@ -61,6 +64,7 @@ install -d -o perrucci -g perrucci -m 0700 "$(dirname "$TERMINAL_CFG")"
   exit 1
 }
 install -d -o perrucci -g perrucci -m 0700 "$BRIDGE_DIR" "$PORTABLE_BRIDGE_DIR"
+install -d -o perrucci -g perrucci -m 0755 "$PORTABLE_PROFILE_DIR" "$DATA_PROFILE_DIR"
 
 umask 077
 cat > "$TERMINAL_CFG" <<EOF
