@@ -358,7 +358,6 @@ def structural_fingerprint(state: dict[str, Any]) -> str:
         "managed_position_count": state.get("managed_position_count"),
         "managed_pending_order_count": state.get("managed_pending_order_count"),
         "unmanaged_symbol_exposure_count": state.get("unmanaged_symbol_exposure_count"),
-        "aggregate_managed_risk_pct": state.get("aggregate_managed_risk_pct"),
         "managed_positions": [compact_position(p) for p in state.get("managed_positions", [])],
         "managed_pending_orders": [compact_order(o) for o in state.get("managed_pending_orders", [])],
         "last_closed_deal": state.get("last_closed_deal"),
