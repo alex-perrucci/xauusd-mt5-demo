@@ -8,8 +8,10 @@ MT5_DIR="$PREFIX/drive_c/Program Files/MetaTrader 5"
 TERMINAL_CFG="$PREFIX/drive_c/xauusd/terminal.ini"
 DATA_DIR="$(bash "$ROOT/scripts/vps/resolve-data-dir.sh")"
 BRIDGE_DIR="$DATA_DIR/MQL5/Files/xauusd"
+PORTABLE_BRIDGE_DIR="$MT5_DIR/MQL5/Files/xauusd"
 RUNTIME_EA="$DATA_DIR/MQL5/Experts/XAUUSD/SignalBridge.ex5"
 GUARD_FILE="$BRIDGE_DIR/guard.txt"
+PORTABLE_GUARD_FILE="$PORTABLE_BRIDGE_DIR/guard.txt"
 
 [[ ${EUID} -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 [[ -f "$ENV_FILE" ]] || {
@@ -58,7 +60,7 @@ install -d -o perrucci -g perrucci -m 0700 "$(dirname "$TERMINAL_CFG")"
   echo "run install-ea-and-services.sh first" >&2
   exit 1
 }
-install -d -o perrucci -g perrucci -m 0700 "$BRIDGE_DIR"
+install -d -o perrucci -g perrucci -m 0700 "$BRIDGE_DIR" "$PORTABLE_BRIDGE_DIR"
 
 umask 077
 cat > "$TERMINAL_CFG" <<EOF
@@ -88,9 +90,10 @@ EOF
 printf '1|%s|%s|%s|%s|%s|%s|%s|%s\n' \
   "$MT5_LOGIN" "$MT5_SERVER" "$BROKER_SYMBOL" "$MAX_SPREAD_POINTS" \
   "$MAX_RISK_PCT" "$MIN_RR" "$MAGIC" "$DEVIATION_POINTS" > "$GUARD_FILE"
+cp "$GUARD_FILE" "$PORTABLE_GUARD_FILE"
 
-chown perrucci:perrucci "$TERMINAL_CFG" "$GUARD_FILE"
-chmod 0600 "$TERMINAL_CFG" "$GUARD_FILE" "$ENV_FILE"
+chown perrucci:perrucci "$TERMINAL_CFG" "$GUARD_FILE" "$PORTABLE_GUARD_FILE"
+chmod 0600 "$TERMINAL_CFG" "$GUARD_FILE" "$PORTABLE_GUARD_FILE" "$ENV_FILE"
 
 systemctl restart xauusd-xvfb.service
 systemctl restart xauusd-mt5.service
