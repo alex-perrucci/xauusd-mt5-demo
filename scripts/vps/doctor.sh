@@ -4,8 +4,9 @@ set -u
 ROOT=/opt/xauusd-mt5-demo
 PREFIX=/home/perrucci/.mt5
 MT5_DIR="$PREFIX/drive_c/Program Files/MetaTrader 5"
-EA_EX5="$MT5_DIR/MQL5/Experts/XAUUSD/SignalBridge.ex5"
-BRIDGE_DIR="$MT5_DIR/MQL5/Files/xauusd"
+DATA_DIR="$(bash "$ROOT/scripts/vps/resolve-data-dir.sh" 2>/dev/null || true)"
+EA_EX5="$DATA_DIR/MQL5/Experts/XAUUSD/SignalBridge.ex5"
+BRIDGE_DIR="$DATA_DIR/MQL5/Files/xauusd"
 FAILED=0
 
 ok(){ printf 'OK   %s\n' "$*"; }
@@ -21,9 +22,10 @@ if [[ -x /opt/wine-devel/bin/wine ]]; then
 fi
 command -v Xvfb >/dev/null 2>&1 && ok "Xvfb present" || fail "Xvfb missing"
 [[ -f "$MT5_DIR/terminal64.exe" ]] && ok "MT5 terminal present" || fail "MT5 terminal missing"
+[[ -n "$DATA_DIR" && -d "$DATA_DIR" ]] && ok "MT5 data directory: $DATA_DIR" || fail "MT5 data directory unresolved"
 METAEDITOR="$(find "$MT5_DIR" -maxdepth 2 -type f -iname 'metaeditor64.exe' -print -quit)"
 [[ -n "$METAEDITOR" ]] && ok "MetaEditor present: $METAEDITOR" || fail "MetaEditor missing"
-[[ -f "$EA_EX5" ]] && ok "SignalBridge.ex5 compiled" || fail "SignalBridge.ex5 missing"
+[[ -f "$EA_EX5" ]] && ok "SignalBridge.ex5 installed in MT5 data directory" || fail "runtime SignalBridge.ex5 missing"
 [[ -f /etc/xauusd-mt5-demo/mt5.env ]] && ok "demo credential file present" || warn "demo credential file not configured yet"
 [[ -f "$PREFIX/drive_c/xauusd/terminal.ini" ]] && ok "MT5 startup config rendered" || warn "terminal.ini not rendered yet"
 [[ -f "$BRIDGE_DIR/guard.txt" ]] && ok "EA local guard present" || warn "guard.txt not rendered yet"
