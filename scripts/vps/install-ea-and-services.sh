@@ -64,9 +64,22 @@ if [[ -f "$COMPILE_LOG" ]]; then
 fi
 
 printf 'Preparing Linux bridge config...\n'
-if [[ ! -f "$ROOT/config.json" ]]; then
-  cp "$ROOT/config.example.json" "$ROOT/config.json"
-fi
+python3 - "$ROOT/config.example.json" "$ROOT/config.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+example_path = Path(sys.argv[1])
+config_path = Path(sys.argv[2])
+defaults = json.loads(example_path.read_text(encoding="utf-8"))
+current = {}
+if config_path.exists():
+    current = json.loads(config_path.read_text(encoding="utf-8"))
+merged = {**defaults, **current}
+# V2 state sync must be explicitly enabled after the VPS deploy key has write access.
+merged["auto_state_push"] = bool(current.get("auto_state_push", defaults.get("auto_state_push", False)))
+config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+PY
 chown perrucci:perrucci "$ROOT/config.json"
 chmod 0600 "$ROOT/config.json"
 python3 -m py_compile "$ROOT/bridge/poller.py"
