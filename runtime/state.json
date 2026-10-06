@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "status": "waiting_for_vps",
+  "connected": false,
+  "demo": null,
+  "trade_allowed": false,
+  "symbol": "XAUUSD",
+  "managed_position": {"count": 0},
+  "managed_pending_order": {"count": 0},
+  "last_signal_id": null,
+  "last_ack": null
+}
