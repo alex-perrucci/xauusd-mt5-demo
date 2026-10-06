@@ -7,8 +7,9 @@ MT5_DIR="$PREFIX/drive_c/Program Files/MetaTrader 5"
 EA_DIR="$MT5_DIR/MQL5/Experts/XAUUSD"
 EA_SRC="$EA_DIR/SignalBridge.mq5"
 EA_EX5="$EA_DIR/SignalBridge.ex5"
-COMPILE_LOG="$EA_DIR/SignalBridge.compile.log"
+COMPILE_LOG="$EA_DIR/SignalBridge.log"
 WINE=/opt/wine-devel/bin/wine
+WINEPATH=/opt/wine-devel/bin/winepath
 WINESERVER=/opt/wine-devel/bin/wineserver
 
 [[ ${EUID} -eq 0 ]] || { echo "run as root" >&2; exit 1; }
@@ -33,8 +34,14 @@ install -m 0644 -o perrucci -g perrucci "$ROOT/ea/SignalBridge.mq5" "$EA_SRC"
 rm -f "$EA_EX5" "$COMPILE_LOG"
 
 printf 'Compiling SignalBridge with MetaEditor...\n'
-EA_SRC_WIN='C:\\Program Files\\MetaTrader 5\\MQL5\\Experts\\XAUUSD\\SignalBridge.mq5'
-COMPILE_LOG_WIN='C:\\Program Files\\MetaTrader 5\\MQL5\\Experts\\XAUUSD\\SignalBridge.compile.log'
+EA_SRC_WIN="$(sudo -u perrucci env HOME=/home/perrucci WINEPREFIX="$PREFIX" "$WINEPATH" -w "$EA_SRC")"
+MQL5_WIN="$(sudo -u perrucci env HOME=/home/perrucci WINEPREFIX="$PREFIX" "$WINEPATH" -w "$MT5_DIR/MQL5")"
+
+printf '  source: %s\n' "$EA_SRC_WIN"
+printf '  include: %s\n' "$MQL5_WIN"
+
+# MetaEditor command-line parsing is strict. Keep the quotes inside the actual
+# Windows-style argument, matching /compile:"path" /include:"path" /log.
 set +e
 timeout --signal=TERM --kill-after=10s 120s \
   sudo -u perrucci env \
@@ -42,25 +49,47 @@ timeout --signal=TERM --kill-after=10s 120s \
     WINEPREFIX="$PREFIX" \
     WINEDEBUG=-all \
     PATH=/opt/wine-devel/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    xvfb-run -a "$WINE" "$METAEDITOR" "/compile:$EA_SRC_WIN" "/log:$COMPILE_LOG_WIN"
+    xvfb-run -a "$WINE" "$METAEDITOR" \
+      "/compile:\"$EA_SRC_WIN\"" \
+      "/include:\"$MQL5_WIN\"" \
+      /log
 compile_rc=$?
 set -e
 
-sudo -u perrucci env HOME=/home/perrucci WINEPREFIX="$PREFIX" "$WINESERVER" -k >/dev/null 2>&1 || true
-sleep 2
+# Give MetaEditor/Wine a moment to flush the .ex5 and .log before stopping its wineserver.
+sleep 3
+
+if [[ ! -f "$EA_EX5" ]]; then
+  # Some MetaEditor builds can place command-line output elsewhere. Locate it
+  # before declaring failure and copy only an exact SignalBridge.ex5 match.
+  FOUND_EX5="$(find "$MT5_DIR/MQL5" -type f -name 'SignalBridge.ex5' -print -quit 2>/dev/null || true)"
+  if [[ -n "$FOUND_EX5" && "$FOUND_EX5" != "$EA_EX5" ]]; then
+    echo "MetaEditor produced EX5 at unexpected path: $FOUND_EX5"
+    install -m 0644 -o perrucci -g perrucci "$FOUND_EX5" "$EA_EX5"
+  fi
+fi
 
 if [[ ! -f "$EA_EX5" ]]; then
   echo "EA compilation failed (rc=$compile_rc); no $EA_EX5 was produced" >&2
+  echo "MetaEditor logs found:" >&2
+  find "$MT5_DIR/MQL5" -maxdepth 6 -type f \( -iname 'SignalBridge*.log' -o -iname '*.log' \) -printf '  %p\n' 2>/dev/null | tail -n 30 >&2 || true
   if [[ -f "$COMPILE_LOG" ]]; then
     echo "----- MetaEditor compile log -----" >&2
     cat "$COMPILE_LOG" >&2 || true
     echo "----------------------------------" >&2
   fi
+  echo "SignalBridge outputs found:" >&2
+  find "$MT5_DIR/MQL5" -maxdepth 6 -type f -iname 'SignalBridge*' -printf '  %p\n' 2>/dev/null >&2 || true
+  sudo -u perrucci env HOME=/home/perrucci WINEPREFIX="$PREFIX" "$WINESERVER" -k >/dev/null 2>&1 || true
   exit 1
 fi
+
+sudo -u perrucci env HOME=/home/perrucci WINEPREFIX="$PREFIX" "$WINESERVER" -k >/dev/null 2>&1 || true
+sleep 2
+
 printf 'EA compiled: %s\n' "$EA_EX5"
 if [[ -f "$COMPILE_LOG" ]]; then
-  tail -n 20 "$COMPILE_LOG" || true
+  tail -n 30 "$COMPILE_LOG" || true
 fi
 
 printf 'Preparing Linux bridge config...\n'
