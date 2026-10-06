@@ -486,6 +486,16 @@ def main() -> int:
             state_raw = newest_text(state_paths)
             if auto_state_push and state_raw:
                 state = parse_state(state_raw)
+                state_mtimes = []
+                for state_path in state_paths:
+                    try:
+                        state_mtimes.append(state_path.stat().st_mtime)
+                    except FileNotFoundError:
+                        pass
+                if state_mtimes:
+                    state["captured_at"] = datetime.fromtimestamp(
+                        max(state_mtimes), timezone.utc
+                    ).isoformat()
                 state["last_ack"] = parse_ack(ack_raw)
                 fp = structural_fingerprint(state)
                 now_monotonic = time.monotonic()
