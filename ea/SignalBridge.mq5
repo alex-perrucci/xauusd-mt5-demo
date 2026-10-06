@@ -9,6 +9,7 @@
 #define LAST_SIGNAL_FILE   "xauusd\\last_signal.txt"
 #define PENDING_META_FILE  "xauusd\\pending_meta.txt"
 #define ABS_MAX_RISK_PCT   0.5
+#define ABS_MAX_VOLUME     0.01
 #define ABS_MIN_RR         2.0
 
 struct GuardConfig
@@ -257,11 +258,17 @@ double NormalizeRiskVolume(const string symbol,const ENUM_ORDER_TYPE side_type,c
      }
 
    double vmin=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN);
-   double vmax=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX);
+   double broker_vmax=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX);
+   double vmax=MathMin(broker_vmax,ABS_MAX_VOLUME);
    double step=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
-   if(vmin<=0 || vmax<=0 || step<=0)
+   if(vmin<=0 || broker_vmax<=0 || step<=0)
      {
       error="invalid broker volume constraints";
+      return 0.0;
+     }
+   if(vmin>ABS_MAX_VOLUME)
+     {
+      error="broker minimum volume exceeds hard safety cap";
       return 0.0;
      }
 
