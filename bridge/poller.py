@@ -204,13 +204,21 @@ def parse_ack(raw: str) -> dict[str, Any] | None:
 
 
 def structural_fingerprint(state: dict[str, Any]) -> str:
+    position = state.get("managed_position") or {}
+    pending = state.get("managed_pending_order") or {}
     compact = {
         "connected": state.get("connected"),
         "demo": state.get("demo"),
         "trade_allowed": state.get("trade_allowed"),
         "symbol": state.get("symbol"),
-        "managed_position": state.get("managed_position"),
-        "managed_pending_order": state.get("managed_pending_order"),
+        "managed_position": {
+            key: position.get(key)
+            for key in ("count", "type", "ticket", "volume", "open_price", "sl", "tp")
+        },
+        "managed_pending_order": {
+            key: pending.get(key)
+            for key in ("count", "type", "ticket", "price", "sl", "tp")
+        },
         "last_signal_id": state.get("last_signal_id"),
         "last_ack": state.get("last_ack"),
     }
@@ -236,10 +244,14 @@ def publish_repo_state(repo_path: Path, payload: dict[str, Any]) -> None:
         "-c", "user.email=xauusd-vps@users.noreply.github.com",
         "commit", "-m", "runtime: update MT5 demo state",
     )
-    pushed = run_git("push", "origin", "HEAD:main", timeout=60, check=False)
+    branch = run_git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    if not branch or branch == "HEAD":
+        raise RuntimeError("cannot publish runtime state from detached HEAD")
+
+    pushed = run_git("push", "origin", f"HEAD:{branch}", timeout=60, check=False)
     if pushed.returncode != 0:
         run_git("pull", "--rebase", "--autostash", timeout=60)
-        pushed = run_git("push", "origin", "HEAD:main", timeout=60, check=False)
+        pushed = run_git("push", "origin", f"HEAD:{branch}", timeout=60, check=False)
         if pushed.returncode != 0:
             raise RuntimeError(pushed.stdout.strip() or "git push failed")
 
