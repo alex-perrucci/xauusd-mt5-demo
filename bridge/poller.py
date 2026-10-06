@@ -170,6 +170,19 @@ def read_text(path: Path) -> str:
         return ""
 
 
+def newest_text(paths: list[Path]) -> str:
+    existing = []
+    for path in paths:
+        try:
+            existing.append((path.stat().st_mtime_ns, path))
+        except FileNotFoundError:
+            continue
+    if not existing:
+        return ""
+    existing.sort(reverse=True)
+    return read_text(existing[0][1])
+
+
 def nullable_number(value: str) -> float | None:
     return None if value == "" else float(value)
 
@@ -345,6 +358,24 @@ def main() -> int:
     bridge_path = Path(os.path.expanduser(str(config["bridge_file"])))
     ack_path = Path(os.path.expanduser(str(config["ack_file"])))
     state_file = Path(os.path.expanduser(str(config.get("state_file", bridge_path.with_name("state.txt")))))
+    alternate_bridge_path = (
+        Path(os.path.expanduser(str(config["alternate_bridge_file"])))
+        if config.get("alternate_bridge_file")
+        else None
+    )
+    alternate_ack_path = (
+        Path(os.path.expanduser(str(config["alternate_ack_file"])))
+        if config.get("alternate_ack_file")
+        else None
+    )
+    alternate_state_file = (
+        Path(os.path.expanduser(str(config["alternate_state_file"])))
+        if config.get("alternate_state_file")
+        else None
+    )
+    bridge_paths = [bridge_path] + ([alternate_bridge_path] if alternate_bridge_path else [])
+    ack_paths = [ack_path] + ([alternate_ack_path] if alternate_ack_path else [])
+    state_paths = [state_file] + ([alternate_state_file] if alternate_state_file else [])
     state_repo_path = ROOT / str(config.get("state_repo_path", "runtime/state.json"))
     poll_seconds = max(5, int(config.get("poll_seconds", 30)))
     state_push_seconds = max(60, int(config.get("state_push_seconds", 3600)))
@@ -358,7 +389,8 @@ def main() -> int:
     last_state_fingerprint = ""
     last_state_push = 0.0
     print(
-        f"bridge ready: signal={signal_path} -> {bridge_path}; state={state_file} -> {state_repo_path}",
+        f"bridge ready: signal={signal_path} -> {', '.join(str(x) for x in bridge_paths)}; "
+        f"state={', '.join(str(x) for x in state_paths)} -> {state_repo_path}",
         flush=True,
     )
 
@@ -376,16 +408,18 @@ def main() -> int:
             signal_id = str(signal["id"])
 
             if signal_id != last_published:
-                atomic_write(bridge_path, to_bridge_line(signal, created_epoch, valid_epoch))
+                bridge_line = to_bridge_line(signal, created_epoch, valid_epoch)
+                for target in bridge_paths:
+                    atomic_write(target, bridge_line)
                 last_published = signal_id
                 print(f"published signal id={signal_id} action={action}", flush=True)
 
-            ack_raw = read_text(ack_path)
+            ack_raw = newest_text(ack_paths)
             if ack_raw and ack_raw != last_ack:
                 last_ack = ack_raw
                 print(f"mt5 ack: {ack_raw}", flush=True)
 
-            state_raw = read_text(state_file)
+            state_raw = newest_text(state_paths)
             if auto_state_push and state_raw:
                 state = parse_state_line(state_raw)
                 state["last_ack"] = parse_ack(ack_raw)
