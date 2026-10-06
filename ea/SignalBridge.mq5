@@ -807,6 +807,43 @@ void WriteState()
         }
      }
 
+   string last_deal_ticket="";
+   string last_position_id="";
+   string last_deal_type="";
+   string last_deal_reason="";
+   string last_deal_price="";
+   string last_deal_profit="";
+   string last_deal_time="";
+
+   datetime history_to=TimeCurrent();
+   datetime history_from=history_to-(60*24*60*60);
+   if(HistorySelect(history_from,history_to))
+     {
+      for(int i=HistoryDealsTotal()-1;i>=0;i--)
+        {
+         ulong deal_ticket=HistoryDealGetTicket(i);
+         if(deal_ticket==0)
+            continue;
+         if(HistoryDealGetString(deal_ticket,DEAL_SYMBOL)!=symbol)
+            continue;
+         if((ulong)HistoryDealGetInteger(deal_ticket,DEAL_MAGIC)!=guard.magic)
+            continue;
+
+         ENUM_DEAL_ENTRY deal_entry=(ENUM_DEAL_ENTRY)HistoryDealGetInteger(deal_ticket,DEAL_ENTRY);
+         if(deal_entry!=DEAL_ENTRY_OUT && deal_entry!=DEAL_ENTRY_OUT_BY)
+            continue;
+
+         last_deal_ticket=(string)deal_ticket;
+         last_position_id=(string)HistoryDealGetInteger(deal_ticket,DEAL_POSITION_ID);
+         last_deal_type=EnumToString((ENUM_DEAL_TYPE)HistoryDealGetInteger(deal_ticket,DEAL_TYPE));
+         last_deal_reason=EnumToString((ENUM_DEAL_REASON)HistoryDealGetInteger(deal_ticket,DEAL_REASON));
+         last_deal_price=DoubleToString(HistoryDealGetDouble(deal_ticket,DEAL_PRICE),8);
+         last_deal_profit=DoubleToString(HistoryDealGetDouble(deal_ticket,DEAL_PROFIT),2);
+         last_deal_time=(string)HistoryDealGetInteger(deal_ticket,DEAL_TIME);
+         break;
+        }
+     }
+
    string bid=has_tick ? DoubleToString(tick.bid,8) : "";
    string ask=has_tick ? DoubleToString(tick.ask,8) : "";
    string line=
@@ -831,6 +868,13 @@ void WriteState()
       "|"+order_price+
       "|"+order_sl+
       "|"+order_tp+
+      "|"+last_deal_ticket+
+      "|"+last_position_id+
+      "|"+last_deal_type+
+      "|"+last_deal_reason+
+      "|"+last_deal_price+
+      "|"+last_deal_profit+
+      "|"+last_deal_time+
       "|"+g_last_signal_id;
 
    WriteSmallFile(STATE_FILE,line);
