@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_ACTIONS = {
     "NO_TRADE", "HOLD", "STATUS",
     "BUY", "SELL", "BUY_STOP", "SELL_STOP",
-    "CLOSE", "CANCEL", "MODIFY",
+    "CLOSE", "CANCEL", "MODIFY", "CLOSE_ALL", "CANCEL_ALL",
 }
 
 
@@ -33,11 +33,11 @@ def parse_dt(value: str, field: str) -> datetime:
 
 
 def validate_signal(signal: dict[str, Any], max_risk_pct: float) -> tuple[str, int, int]:
-    if signal.get("schema_version") != 2:
-        raise ValueError("schema_version must be 2")
+    if signal.get("schema_version") != 3:
+        raise ValueError("schema_version must be 3")
 
     signal_id = str(signal.get("id", "")).strip()
-    if not signal_id or "|" in signal_id or "\n" in signal_id or "\r" in signal_id:
+    if not signal_id or any(ch in signal_id for ch in ("|", "\n", "\r")):
         raise ValueError("invalid signal id")
 
     if signal.get("symbol") != "XAUUSD":
@@ -58,9 +58,23 @@ def validate_signal(signal: dict[str, Any], max_risk_pct: float) -> tuple[str, i
         risk_pct = float(signal.get("risk_pct", 0.0))
     except (TypeError, ValueError) as exc:
         raise ValueError("risk_pct must be numeric") from exc
-
     if risk_pct < 0 or risk_pct > max_risk_pct or risk_pct > 0.5:
         raise ValueError(f"risk_pct must be between 0 and {min(max_risk_pct, 0.5)}")
+
+    target_raw = signal.get("target_ticket")
+    target_ticket: int | None
+    if target_raw in (None, ""):
+        target_ticket = None
+    else:
+        try:
+            target_ticket = int(target_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("target_ticket must be an integer") from exc
+        if target_ticket <= 0:
+            raise ValueError("target_ticket must be > 0")
+
+    if action in {"CLOSE", "CANCEL", "MODIFY"} and target_ticket is None:
+        raise ValueError(f"{action} requires target_ticket")
 
     if action in {"BUY", "SELL", "BUY_STOP", "SELL_STOP"}:
         for field in ("sl", "tp"):
@@ -81,8 +95,12 @@ def validate_signal(signal: dict[str, Any], max_risk_pct: float) -> tuple[str, i
         if entry <= 0:
             raise ValueError("entry must be > 0 for pending orders")
 
-    if action == "MODIFY" and signal.get("sl") is None and signal.get("tp") is None:
-        raise ValueError("MODIFY requires sl and/or tp")
+    if action == "MODIFY":
+        if signal.get("entry") is None and signal.get("sl") is None and signal.get("tp") is None:
+            raise ValueError("MODIFY requires entry and/or sl and/or tp")
+        for field in ("entry", "sl", "tp"):
+            if signal.get(field) is not None and float(signal[field]) <= 0:
+                raise ValueError(f"{field} must be > 0 when supplied")
 
     return action, int(created.timestamp()), int(valid_until.timestamp())
 
@@ -92,10 +110,12 @@ def to_bridge_line(signal: dict[str, Any], created_epoch: int, valid_epoch: int)
         value = signal.get(name)
         return "" if value is None else format(float(value), ".10g")
 
+    target = signal.get("target_ticket")
     fields = [
-        "2", str(signal["id"]), str(signal["action"]), "XAUUSD",
+        "3", str(signal["id"]), str(signal["action"]), "XAUUSD",
         optional_number("entry"), optional_number("sl"), optional_number("tp"),
         format(float(signal.get("risk_pct", 0.0)), ".10g"),
+        "" if target in (None, "") else str(int(target)),
         str(created_epoch), str(valid_epoch),
     ]
     return "|".join(fields) + "\n"
@@ -148,12 +168,7 @@ def current_branch() -> str:
 
 
 def fetch_branch(branch: str) -> None:
-    run_git(
-        "fetch",
-        "origin",
-        f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
-        timeout=60,
-    )
+    run_git("fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", timeout=60)
 
 
 def load_remote_signal(signal_path: Path, branch: str) -> dict[str, Any]:
@@ -171,20 +186,7 @@ def read_text(path: Path) -> str:
 
 
 def newest_text(paths: list[Path]) -> str:
-    existing = []
-    for path in paths:
-        try:
-            existing.append((path.stat().st_mtime_ns, path))
-        except FileNotFoundError:
-            continue
-    if not existing:
-        return ""
-    existing.sort(reverse=True)
-    return read_text(existing[0][1])
-
-
-def newest_text(paths: list[Path]) -> str:
-    existing = []
+    existing: list[tuple[int, Path]] = []
     for path in paths:
         try:
             existing.append((path.stat().st_mtime_ns, path))
@@ -204,56 +206,124 @@ def nullable_int(value: str) -> int | None:
     return None if value == "" else int(value)
 
 
-def parse_state_line(raw: str) -> dict[str, Any]:
+def iso_epoch(value: str) -> str | None:
+    if not value:
+        return None
+    epoch = int(value)
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat() if epoch > 0 else None
+
+
+def parse_state_v1(raw: str) -> dict[str, Any]:
     fields = raw.strip().split("|")
     if len(fields) != 30 or fields[0] != "1":
-        raise ValueError(f"invalid MT5 state format: expected 30 fields, got {len(fields)}")
-
-    server_epoch = int(fields[1]) if fields[1] else 0
-    server_time = datetime.fromtimestamp(server_epoch, timezone.utc).isoformat() if server_epoch > 0 else None
-
+        raise ValueError(f"invalid legacy MT5 state format: expected 30 fields, got {len(fields)}")
+    pos = []
+    if int(fields[8] or 0) > 0 and fields[10]:
+        pos.append({
+            "ticket": nullable_int(fields[10]), "type": fields[9] or None,
+            "volume": nullable_number(fields[11]), "open_price": nullable_number(fields[12]),
+            "sl": nullable_number(fields[13]), "tp": nullable_number(fields[14]),
+            "profit": nullable_number(fields[15]), "risk_pct": None, "comment": None,
+        })
+    orders = []
+    if int(fields[16] or 0) > 0 and fields[18]:
+        orders.append({
+            "ticket": nullable_int(fields[18]), "type": fields[17] or None,
+            "volume": None, "price": nullable_number(fields[19]),
+            "sl": nullable_number(fields[20]), "tp": nullable_number(fields[21]),
+            "risk_pct": None, "expiration": None, "comment": None,
+        })
     return {
         "schema_version": 1,
         "captured_at": datetime.now(timezone.utc).isoformat(),
-        "server_time": server_time,
+        "server_time": iso_epoch(fields[1]),
         "connected": fields[2] == "1",
         "demo": fields[3] == "1",
         "trade_allowed": fields[4] == "1",
+        "hedging": None,
         "symbol": fields[5],
         "bid": nullable_number(fields[6]),
         "ask": nullable_number(fields[7]),
-        "managed_position": {
-            "count": int(fields[8] or 0),
-            "type": fields[9] or None,
-            "ticket": nullable_int(fields[10]),
-            "volume": nullable_number(fields[11]),
-            "open_price": nullable_number(fields[12]),
-            "sl": nullable_number(fields[13]),
-            "tp": nullable_number(fields[14]),
-            "profit": nullable_number(fields[15]),
-        },
-        "managed_pending_order": {
-            "count": int(fields[16] or 0),
-            "type": fields[17] or None,
-            "ticket": nullable_int(fields[18]),
-            "price": nullable_number(fields[19]),
-            "sl": nullable_number(fields[20]),
-            "tp": nullable_number(fields[21]),
-        },
+        "managed_position_count": int(fields[8] or 0),
+        "managed_pending_order_count": int(fields[16] or 0),
+        "unmanaged_symbol_exposure_count": None,
+        "aggregate_managed_risk_pct": None,
+        "managed_positions": pos,
+        "managed_pending_orders": orders,
         "last_closed_deal": {
-            "ticket": nullable_int(fields[22]),
-            "position_id": nullable_int(fields[23]),
-            "type": fields[24] or None,
-            "reason": fields[25] or None,
-            "price": nullable_number(fields[26]),
-            "profit": nullable_number(fields[27]),
-            "server_time": (
-                datetime.fromtimestamp(int(fields[28]), timezone.utc).isoformat()
-                if fields[28]
-                else None
-            ),
+            "ticket": nullable_int(fields[22]), "position_id": nullable_int(fields[23]),
+            "type": fields[24] or None, "reason": fields[25] or None,
+            "price": nullable_number(fields[26]), "profit": nullable_number(fields[27]),
+            "server_time": iso_epoch(fields[28]),
         },
         "last_signal_id": fields[29] or None,
+    }
+
+
+def parse_state(raw: str) -> dict[str, Any]:
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("empty MT5 state")
+    if lines[0].startswith("1|"):
+        return parse_state_v1(lines[0])
+
+    h = lines[0].split("|")
+    if len(h) != 14 or h[0] != "2":
+        raise ValueError(f"invalid MT5 V3 state header: expected 14 fields, got {len(h)}")
+
+    positions: list[dict[str, Any]] = []
+    orders: list[dict[str, Any]] = []
+    last_deal: dict[str, Any] | None = None
+
+    for line in lines[1:]:
+        f = line.split("|")
+        if f[0] == "P":
+            if len(f) != 10:
+                raise ValueError(f"invalid position state record: {line!r}")
+            positions.append({
+                "ticket": int(f[1]), "type": f[2], "volume": nullable_number(f[3]),
+                "open_price": nullable_number(f[4]), "sl": nullable_number(f[5]),
+                "tp": nullable_number(f[6]), "profit": nullable_number(f[7]),
+                "risk_pct": nullable_number(f[8]), "comment": f[9] or None,
+            })
+        elif f[0] == "O":
+            if len(f) != 10:
+                raise ValueError(f"invalid pending state record: {line!r}")
+            orders.append({
+                "ticket": int(f[1]), "type": f[2], "volume": nullable_number(f[3]),
+                "price": nullable_number(f[4]), "sl": nullable_number(f[5]),
+                "tp": nullable_number(f[6]), "risk_pct": nullable_number(f[7]),
+                "expiration": iso_epoch(f[8]), "comment": f[9] or None,
+            })
+        elif f[0] == "D":
+            if len(f) != 8:
+                raise ValueError(f"invalid deal state record: {line!r}")
+            last_deal = {
+                "ticket": nullable_int(f[1]), "position_id": nullable_int(f[2]),
+                "type": f[3] or None, "reason": f[4] or None,
+                "price": nullable_number(f[5]), "profit": nullable_number(f[6]),
+                "server_time": iso_epoch(f[7]),
+            }
+
+    return {
+        "schema_version": 2,
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "server_time": iso_epoch(h[1]),
+        "connected": h[2] == "1",
+        "demo": h[3] == "1",
+        "trade_allowed": h[4] == "1",
+        "hedging": h[5] == "1",
+        "symbol": h[6],
+        "bid": nullable_number(h[7]),
+        "ask": nullable_number(h[8]),
+        "managed_position_count": int(h[9] or 0),
+        "managed_pending_order_count": int(h[10] or 0),
+        "unmanaged_symbol_exposure_count": int(h[11] or 0),
+        "aggregate_managed_risk_pct": nullable_number(h[12]),
+        "managed_positions": positions,
+        "managed_pending_orders": orders,
+        "last_closed_deal": last_deal,
+        "last_signal_id": h[13] or None,
     }
 
 
@@ -273,21 +343,24 @@ def parse_ack(raw: str) -> dict[str, Any] | None:
 
 
 def structural_fingerprint(state: dict[str, Any]) -> str:
-    position = state.get("managed_position") or {}
-    pending = state.get("managed_pending_order") or {}
+    def compact_position(p: dict[str, Any]) -> dict[str, Any]:
+        return {k: p.get(k) for k in ("ticket", "type", "volume", "open_price", "sl", "tp", "risk_pct", "comment")}
+
+    def compact_order(o: dict[str, Any]) -> dict[str, Any]:
+        return {k: o.get(k) for k in ("ticket", "type", "volume", "price", "sl", "tp", "risk_pct", "expiration", "comment")}
+
     compact = {
         "connected": state.get("connected"),
         "demo": state.get("demo"),
         "trade_allowed": state.get("trade_allowed"),
+        "hedging": state.get("hedging"),
         "symbol": state.get("symbol"),
-        "managed_position": {
-            key: position.get(key)
-            for key in ("count", "type", "ticket", "volume", "open_price", "sl", "tp")
-        },
-        "managed_pending_order": {
-            key: pending.get(key)
-            for key in ("count", "type", "ticket", "price", "sl", "tp")
-        },
+        "managed_position_count": state.get("managed_position_count"),
+        "managed_pending_order_count": state.get("managed_pending_order_count"),
+        "unmanaged_symbol_exposure_count": state.get("unmanaged_symbol_exposure_count"),
+        "aggregate_managed_risk_pct": state.get("aggregate_managed_risk_pct"),
+        "managed_positions": [compact_position(p) for p in state.get("managed_positions", [])],
+        "managed_pending_orders": [compact_order(o) for o in state.get("managed_pending_orders", [])],
         "last_closed_deal": state.get("last_closed_deal"),
         "last_signal_id": state.get("last_signal_id"),
         "last_ack": state.get("last_ack"),
@@ -305,7 +378,6 @@ def publish_repo_state(repo_path: Path, payload: dict[str, Any], branch: str) ->
         fetch_branch(branch)
         remote_ref = f"origin/{branch}"
         parent = run_git("rev-parse", remote_ref).stdout.strip()
-
         blob = run_git("hash-object", "-w", "--stdin", input_text=content).stdout.strip()
 
         fd, index_path = tempfile.mkstemp(prefix="xauusd-git-index.")
@@ -314,15 +386,7 @@ def publish_repo_state(repo_path: Path, payload: dict[str, Any], branch: str) ->
             os.unlink(index_path)
             env = {"GIT_INDEX_FILE": index_path}
             run_git("read-tree", remote_ref, extra_env=env)
-            run_git(
-                "update-index",
-                "--add",
-                "--cacheinfo",
-                "100644",
-                blob,
-                rel,
-                extra_env=env,
-            )
+            run_git("update-index", "--add", "--cacheinfo", "100644", blob, rel, extra_env=env)
             tree = run_git("write-tree", extra_env=env).stdout.strip()
         finally:
             try:
@@ -337,22 +401,11 @@ def publish_repo_state(repo_path: Path, payload: dict[str, Any], branch: str) ->
             "GIT_COMMITTER_EMAIL": "xauusd-vps@users.noreply.github.com",
         }
         commit = run_git(
-            "commit-tree",
-            tree,
-            "-p",
-            parent,
-            "-m",
-            "runtime: update MT5 demo state",
+            "commit-tree", tree, "-p", parent, "-m", "runtime: update MT5 demo state",
             extra_env=commit_env,
         ).stdout.strip()
 
-        pushed = run_git(
-            "push",
-            "origin",
-            f"{commit}:refs/heads/{branch}",
-            timeout=60,
-            check=False,
-        )
+        pushed = run_git("push", "origin", f"{commit}:refs/heads/{branch}", timeout=60, check=False)
         if pushed.returncode == 0:
             return
         if attempt == 1:
@@ -360,9 +413,7 @@ def publish_repo_state(repo_path: Path, payload: dict[str, Any], branch: str) ->
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Bidirectional GitHub <-> MT5 MQL5 bridge for the XAUUSD demo experiment."
-    )
+    parser = argparse.ArgumentParser(description="Bidirectional GitHub <-> MT5 bridge for XAUUSD demo.")
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
 
@@ -371,39 +422,10 @@ def main() -> int:
     bridge_path = Path(os.path.expanduser(str(config["bridge_file"])))
     ack_path = Path(os.path.expanduser(str(config["ack_file"])))
     state_file = Path(os.path.expanduser(str(config.get("state_file", bridge_path.with_name("state.txt")))))
-    alternate_bridge_path = (
-        Path(os.path.expanduser(str(config["alternate_bridge_file"])))
-        if config.get("alternate_bridge_file")
-        else None
-    )
-    alternate_ack_path = (
-        Path(os.path.expanduser(str(config["alternate_ack_file"])))
-        if config.get("alternate_ack_file")
-        else None
-    )
-    alternate_state_file = (
-        Path(os.path.expanduser(str(config["alternate_state_file"])))
-        if config.get("alternate_state_file")
-        else None
-    )
-    bridge_paths = [bridge_path] + ([alternate_bridge_path] if alternate_bridge_path else [])
-    ack_paths = [ack_path] + ([alternate_ack_path] if alternate_ack_path else [])
-    state_paths = [state_file] + ([alternate_state_file] if alternate_state_file else [])
-    alternate_bridge_path = (
-        Path(os.path.expanduser(str(config["alternate_bridge_file"])))
-        if config.get("alternate_bridge_file")
-        else None
-    )
-    alternate_ack_path = (
-        Path(os.path.expanduser(str(config["alternate_ack_file"])))
-        if config.get("alternate_ack_file")
-        else None
-    )
-    alternate_state_file = (
-        Path(os.path.expanduser(str(config["alternate_state_file"])))
-        if config.get("alternate_state_file")
-        else None
-    )
+    alternate_bridge_path = Path(os.path.expanduser(str(config["alternate_bridge_file"]))) if config.get("alternate_bridge_file") else None
+    alternate_ack_path = Path(os.path.expanduser(str(config["alternate_ack_file"]))) if config.get("alternate_ack_file") else None
+    alternate_state_file = Path(os.path.expanduser(str(config["alternate_state_file"]))) if config.get("alternate_state_file") else None
+
     bridge_paths = [bridge_path] + ([alternate_bridge_path] if alternate_bridge_path else [])
     ack_paths = [ack_path] + ([alternate_ack_path] if alternate_ack_path else [])
     state_paths = [state_file] + ([alternate_state_file] if alternate_state_file else [])
@@ -435,6 +457,7 @@ def main() -> int:
                     signal = load_json(signal_path)
             else:
                 signal = load_json(signal_path)
+
             action, created_epoch, valid_epoch = validate_signal(signal, max_risk_pct)
             signal_id = str(signal["id"])
 
@@ -452,7 +475,7 @@ def main() -> int:
 
             state_raw = newest_text(state_paths)
             if auto_state_push and state_raw:
-                state = parse_state_line(state_raw)
+                state = parse_state(state_raw)
                 state["last_ack"] = parse_ack(ack_raw)
                 fp = structural_fingerprint(state)
                 now_monotonic = time.monotonic()
