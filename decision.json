@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "id": "bootstrap-decision-v1",
+  "id": "status-decision-20261007-0847z",
   "symbol": "XAUUSD",
-  "intent": "NO_TRADE",
+  "intent": "STATUS",
   "target_ticket": null,
   "entry": null,
   "sl": null,
   "tp": null,
   "risk_pct": 0.0,
-  "created_at": "2026-10-07T00:00:00+00:00",
-  "valid_until": "2026-10-07T00:05:00+00:00",
-  "reason": "Expired bootstrap decision. Safe placeholder only; must never create or modify an exposure."
+  "created_at": "2026-10-07T08:47:00+00:00",
+  "valid_until": "2026-10-07T08:55:00+00:00",
+  "reason": "Harmless end-to-end validation of decision mode. Must not open, modify, or close any exposure."
 }
