@@ -1,8 +1,8 @@
 {
   "aggregate_managed_risk_pct": 0.0143,
-  "ask": 4125.15,
-  "bid": 4124.84,
-  "captured_at": "2026-10-07T09:00:58.452648+00:00",
+  "ask": 4125.05,
+  "bid": 4124.74,
+  "captured_at": "2026-10-07T09:03:05.452090+00:00",
   "connected": true,
   "demo": true,
   "hedging": true,
@@ -18,7 +18,7 @@
   "managed_pending_orders": [
     {
       "comment": "cgpt-h1:exec-h1-sellst",
-      "expiration": "2026-10-07T09:04:00+00:00",
+      "expiration": "2026-10-07T09:04:01+00:00",
       "price": 4108.0,
       "risk_pct": 0.0143,
       "sl": 4124.0,
@@ -31,7 +31,7 @@
   "managed_position_count": 0,
   "managed_positions": [],
   "schema_version": 2,
-  "server_time": "2026-10-07T09:00:58+00:00",
+  "server_time": "2026-10-07T09:03:05+00:00",
   "symbol": "XAUUSD",
   "trade_allowed": true,
   "unmanaged_symbol_exposure_count": 0
