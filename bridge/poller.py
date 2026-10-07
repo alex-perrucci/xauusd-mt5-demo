@@ -18,6 +18,21 @@ ALLOWED_ACTIONS = {
     "BUY", "SELL", "BUY_STOP", "SELL_STOP",
     "CLOSE", "CANCEL", "MODIFY", "CLOSE_ALL", "CANCEL_ALL",
 }
+DECISION_TO_ACTION = {
+    "NO_TRADE": "NO_TRADE",
+    "HOLD": "HOLD",
+    "STATUS": "STATUS",
+    "PROPOSE_BUY": "BUY",
+    "PROPOSE_SELL": "SELL",
+    "PROPOSE_BUY_STOP": "BUY_STOP",
+    "PROPOSE_SELL_STOP": "SELL_STOP",
+    "PROPOSE_CLOSE": "CLOSE",
+    "PROPOSE_CANCEL": "CANCEL",
+    "PROPOSE_MODIFY": "MODIFY",
+    "PROPOSE_CLOSE_ALL": "CLOSE_ALL",
+    "PROPOSE_CANCEL_ALL": "CANCEL_ALL",
+}
+NEW_ENTRY_ACTIONS = {"BUY", "SELL", "BUY_STOP", "SELL_STOP"}
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -105,6 +120,230 @@ def validate_signal(signal: dict[str, Any], max_risk_pct: float) -> tuple[str, i
     return action, int(created.timestamp()), int(valid_until.timestamp())
 
 
+
+def _num(value: Any, field: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be numeric") from exc
+
+
+def _same_side(kind: str | None, side: str) -> bool:
+    if not kind:
+        return False
+    return str(kind).upper().startswith(side)
+
+
+def validate_decision(
+    decision: dict[str, Any],
+    state: dict[str, Any],
+    max_risk_pct: float,
+    freshness_seconds: int,
+    max_exposures: int,
+    min_trade_risk_pct: float,
+) -> dict[str, Any]:
+    """Validate a non-executable decision against authoritative local MT5 state.
+
+    This path is intentionally DEMO-only. It converts PROPOSE_* intents into
+    executable schema-v3 signals only after all runtime gates pass.
+    """
+    if decision.get("schema_version") != 1:
+        raise ValueError("decision schema_version must be 1")
+
+    decision_id = str(decision.get("id", "")).strip()
+    if not decision_id or any(ch in decision_id for ch in ("|", "\n", "\r")):
+        raise ValueError("invalid decision id")
+    if decision.get("symbol") != "XAUUSD":
+        raise ValueError("decision symbol must be XAUUSD")
+
+    intent = str(decision.get("intent", "")).strip().upper()
+    if intent not in DECISION_TO_ACTION:
+        raise ValueError(f"unsupported decision intent {intent!r}")
+    action = DECISION_TO_ACTION[intent]
+
+    created = parse_dt(str(decision.get("created_at", "")), "created_at")
+    valid_until = parse_dt(str(decision.get("valid_until", "")), "valid_until")
+    now = datetime.now(timezone.utc)
+    if valid_until <= created:
+        raise ValueError("decision valid_until must be after created_at")
+    if now > valid_until:
+        raise ValueError("decision is expired")
+
+    # Hard readiness gate. This executor is deliberately DEMO-only.
+    if state.get("schema_version") != 2:
+        raise ValueError("V3_NOT_READY: schema_version != 2")
+    if state.get("connected") is not True:
+        raise ValueError("V3_NOT_READY: connected != true")
+    if state.get("demo") is not True:
+        raise ValueError("LIVE_ACCOUNT_BLOCKED: demo != true")
+    if state.get("trade_allowed") is not True:
+        raise ValueError("V3_NOT_READY: trade_allowed != true")
+    if state.get("hedging") is not True:
+        raise ValueError("V3_NOT_READY: hedging != true")
+    if int(state.get("unmanaged_symbol_exposure_count") or 0) != 0:
+        raise ValueError("V3_NOT_READY: unmanaged XAUUSD exposure exists")
+
+    captured = parse_dt(str(state.get("captured_at", "")), "state.captured_at")
+    age = (now - captured).total_seconds()
+    if age < -30:
+        raise ValueError("STATE_CLOCK_INVALID: captured_at is in the future")
+    if age > freshness_seconds:
+        raise ValueError(f"STATE_STALE: age={age:.0f}s")
+
+    positions = list(state.get("managed_positions") or [])
+    orders = list(state.get("managed_pending_orders") or [])
+    position_count = int(state.get("managed_position_count") or 0)
+    order_count = int(state.get("managed_pending_order_count") or 0)
+    total_exposures = position_count + order_count
+    if total_exposures > max_exposures:
+        raise ValueError("V3_NOT_READY: managed exposure count exceeds maximum")
+
+    agg_risk = _num(state.get("aggregate_managed_risk_pct", 0.0), "aggregate_managed_risk_pct")
+    if agg_risk < 0 or agg_risk > 0.5 + 1e-9:
+        raise ValueError("invalid aggregate managed risk")
+
+    signal: dict[str, Any] = {
+        "schema_version": 3,
+        "id": f"exec-{decision_id}",
+        "symbol": "XAUUSD",
+        "action": action,
+        "target_ticket": None,
+        "entry": None,
+        "sl": None,
+        "tp": None,
+        "risk_pct": 0.0,
+        "created_at": now.isoformat(),
+        "valid_until": valid_until.isoformat(),
+        "reason": f"Validated VPS decision {decision_id}: {str(decision.get('reason', '')).strip()}",
+    }
+
+    target_raw = decision.get("target_ticket")
+    target_ticket = None if target_raw in (None, "") else int(target_raw)
+    if target_ticket is not None and target_ticket <= 0:
+        raise ValueError("target_ticket must be > 0")
+
+    if action in NEW_ENTRY_ACTIONS:
+        if total_exposures >= max_exposures:
+            raise ValueError("MAX_EXPOSURES_REACHED")
+
+        remaining = 0.50 - agg_risk
+        requested = _num(decision.get("risk_pct", 0.15), "risk_pct")
+        requested = min(requested, 0.15, max_risk_pct, remaining)
+        if requested < min_trade_risk_pct:
+            raise ValueError(
+                f"INSUFFICIENT_RISK_CAPACITY: remaining={remaining:.4f}, usable={requested:.4f}"
+            )
+
+        sl = _num(decision.get("sl"), "sl")
+        tp = _num(decision.get("tp"), "tp")
+        if sl <= 0 or tp <= 0:
+            raise ValueError("SL and TP must be > 0")
+
+        if action in {"BUY_STOP", "SELL_STOP"}:
+            entry = _num(decision.get("entry"), "entry")
+            if entry <= 0:
+                raise ValueError("pending entry must be > 0")
+            signal["entry"] = entry
+        else:
+            market_field = "ask" if action == "BUY" else "bid"
+            entry = _num(state.get(market_field), f"state.{market_field}")
+            if entry <= 0:
+                raise ValueError("invalid current market price")
+
+        if action in {"BUY", "BUY_STOP"}:
+            if not (sl < entry < tp):
+                raise ValueError("BUY geometry requires SL < entry < TP")
+            risk_distance = entry - sl
+            reward_distance = tp - entry
+            side = "BUY"
+        else:
+            if not (tp < entry < sl):
+                raise ValueError("SELL geometry requires TP < entry < SL")
+            risk_distance = sl - entry
+            reward_distance = entry - tp
+            side = "SELL"
+
+        rr = reward_distance / risk_distance
+        if rr < 2.0 - 1e-9:
+            raise ValueError(f"RR_TOO_LOW: {rr:.3f}")
+
+        # Conservative duplicate-thesis guard: same-side managed exposure with
+        # an entry/open price within 0.25% of the proposed entry.
+        for item in positions:
+            existing = item.get("open_price")
+            if _same_side(item.get("type"), side) and existing not in (None, ""):
+                existing_f = float(existing)
+                if existing_f > 0 and abs(entry - existing_f) / entry <= 0.0025:
+                    raise ValueError("DUPLICATE_THESIS: nearby same-side managed position")
+        for item in orders:
+            existing = item.get("price")
+            if _same_side(item.get("type"), side) and existing not in (None, ""):
+                existing_f = float(existing)
+                if existing_f > 0 and abs(entry - existing_f) / entry <= 0.0025:
+                    raise ValueError("DUPLICATE_THESIS: nearby same-side pending order")
+
+        signal["sl"] = sl
+        signal["tp"] = tp
+        signal["risk_pct"] = requested
+
+    elif action == "CLOSE":
+        if target_ticket is None:
+            raise ValueError("CLOSE requires target_ticket")
+        if not any(int(p.get("ticket") or 0) == target_ticket for p in positions):
+            raise ValueError("TARGET_NOT_MANAGED_POSITION")
+        signal["target_ticket"] = target_ticket
+
+    elif action == "CANCEL":
+        if target_ticket is None:
+            raise ValueError("CANCEL requires target_ticket")
+        if not any(int(o.get("ticket") or 0) == target_ticket for o in orders):
+            raise ValueError("TARGET_NOT_MANAGED_PENDING_ORDER")
+        signal["target_ticket"] = target_ticket
+
+    elif action == "MODIFY":
+        if target_ticket is None:
+            raise ValueError("MODIFY requires target_ticket")
+        pos = next((p for p in positions if int(p.get("ticket") or 0) == target_ticket), None)
+        order = next((o for o in orders if int(o.get("ticket") or 0) == target_ticket), None)
+        if pos is None and order is None:
+            raise ValueError("TARGET_NOT_MANAGED")
+
+        supplied = False
+        for field in ("entry", "sl", "tp"):
+            if decision.get(field) is not None:
+                value = _num(decision.get(field), field)
+                if value <= 0:
+                    raise ValueError(f"{field} must be > 0")
+                signal[field] = value
+                supplied = True
+        if not supplied:
+            raise ValueError("MODIFY requires entry and/or sl and/or tp")
+
+        # Never allow the automated validator to widen an existing stop.
+        item = pos if pos is not None else order
+        current_sl = item.get("sl") if item else None
+        new_sl = signal.get("sl")
+        kind = str(item.get("type") or "").upper() if item else ""
+        if new_sl is not None and current_sl not in (None, ""):
+            current_sl_f = float(current_sl)
+            if kind.startswith("BUY") and new_sl < current_sl_f - 1e-9:
+                raise ValueError("RISK_WIDENING_BLOCKED")
+            if kind.startswith("SELL") and new_sl > current_sl_f + 1e-9:
+                raise ValueError("RISK_WIDENING_BLOCKED")
+
+        signal["target_ticket"] = target_ticket
+
+    elif action == "CLOSE_ALL":
+        if not positions:
+            raise ValueError("NO_MANAGED_POSITIONS_TO_CLOSE")
+
+    elif action == "CANCEL_ALL":
+        if not orders:
+            raise ValueError("NO_MANAGED_ORDERS_TO_CANCEL")
+
+    return signal
+
+
 def to_bridge_line(signal: dict[str, Any], created_epoch: int, valid_epoch: int) -> str:
     def optional_number(name: str) -> str:
         value = signal.get(name)
@@ -171,11 +410,15 @@ def fetch_branch(branch: str) -> None:
     run_git("fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", timeout=60)
 
 
-def load_remote_signal(signal_path: Path, branch: str) -> dict[str, Any]:
+def load_remote_json(path: Path, branch: str) -> dict[str, Any]:
     fetch_branch(branch)
-    rel = signal_path.relative_to(ROOT).as_posix()
+    rel = path.relative_to(ROOT).as_posix()
     result = run_git("show", f"origin/{branch}:{rel}")
     return json.loads(result.stdout)
+
+
+def load_remote_signal(signal_path: Path, branch: str) -> dict[str, Any]:
+    return load_remote_json(signal_path, branch)
 
 
 def read_text(path: Path) -> str:
@@ -418,6 +661,10 @@ def main() -> int:
 
     config = load_json(Path(args.config))
     signal_path = ROOT / str(config.get("signal_path", "signal.json"))
+    decision_path = ROOT / str(config.get("decision_path", "decision.json"))
+    executor_signal_path = ROOT / str(
+        config.get("executor_signal_path", "runtime/executable_signal.json")
+    )
     bridge_path = Path(os.path.expanduser(str(config["bridge_file"])))
     ack_path = Path(os.path.expanduser(str(config["ack_file"])))
     state_file = Path(os.path.expanduser(str(config.get("state_file", bridge_path.with_name("state.txt")))))
@@ -434,6 +681,10 @@ def main() -> int:
     max_risk_pct = min(0.5, float(config.get("max_risk_pct", 0.5)))
     auto_git_pull = bool(config.get("auto_git_pull", True))
     auto_state_push = bool(config.get("auto_state_push", False))
+    decision_mode = bool(config.get("decision_mode", False))
+    state_freshness_seconds = max(60, int(config.get("state_freshness_seconds", 600)))
+    max_managed_exposures = min(3, max(1, int(config.get("max_managed_exposures", 3))))
+    min_trade_risk_pct = max(0.0, float(config.get("min_trade_risk_pct", 0.05)))
     branch = current_branch()
 
     last_published = ""
@@ -442,49 +693,22 @@ def main() -> int:
     last_state_fingerprint = ""
     last_state_push = 0.0
     print(
-        f"bridge ready: signal={signal_path} -> {', '.join(str(x) for x in bridge_paths)}; "
+        f"bridge ready: mode={'decision' if decision_mode else 'signal'}; "
+        f"source={decision_path if decision_mode else signal_path} -> {', '.join(str(x) for x in bridge_paths)}; "
         f"state={', '.join(str(x) for x in state_paths)} -> {state_repo_path}",
         flush=True,
     )
 
     while True:
         try:
-            if auto_git_pull:
-                try:
-                    signal = load_remote_signal(signal_path, branch)
-                except Exception as exc:
-                    print(f"WARN remote signal fetch failed, using local copy: {exc}", flush=True)
-                    signal = load_json(signal_path)
-            else:
-                signal = load_json(signal_path)
-
-            signal_id = str(signal.get("id", "")).strip()
-
-            try:
-                action, created_epoch, valid_epoch = validate_signal(signal, max_risk_pct)
-            except ValueError as exc:
-                if signal_id != last_rejected_signal:
-                    print(
-                        f"rejected signal id={signal_id or '<missing>'}: {exc}",
-                        flush=True,
-                    )
-                    last_rejected_signal = signal_id
-            else:
-                last_rejected_signal = ""
-                if signal_id != last_published:
-                    bridge_line = to_bridge_line(signal, created_epoch, valid_epoch)
-                    for target in bridge_paths:
-                        atomic_write(target, bridge_line)
-                    last_published = signal_id
-                    print(f"published signal id={signal_id} action={action}", flush=True)
-
             ack_raw = newest_text(ack_paths)
             if ack_raw and ack_raw != last_ack:
                 last_ack = ack_raw
                 print(f"mt5 ack: {ack_raw}", flush=True)
 
+            state: dict[str, Any] | None = None
             state_raw = newest_text(state_paths)
-            if auto_state_push and state_raw:
+            if state_raw:
                 state = parse_state(state_raw)
                 state_mtimes = []
                 for state_path in state_paths:
@@ -497,15 +721,90 @@ def main() -> int:
                         max(state_mtimes), timezone.utc
                     ).isoformat()
                 state["last_ack"] = parse_ack(ack_raw)
-                fp = structural_fingerprint(state)
-                now_monotonic = time.monotonic()
-                changed = fp != last_state_fingerprint
-                heartbeat_due = now_monotonic - last_state_push >= state_push_seconds
-                if changed or heartbeat_due:
-                    publish_repo_state(state_repo_path, state, branch)
-                    last_state_fingerprint = fp
-                    last_state_push = now_monotonic
-                    print("published MT5 state " + ("(change)" if changed else "(heartbeat)"), flush=True)
+
+                if auto_state_push:
+                    fp = structural_fingerprint(state)
+                    now_monotonic = time.monotonic()
+                    changed = fp != last_state_fingerprint
+                    heartbeat_due = now_monotonic - last_state_push >= state_push_seconds
+                    if changed or heartbeat_due:
+                        publish_repo_state(state_repo_path, state, branch)
+                        last_state_fingerprint = fp
+                        last_state_push = now_monotonic
+                        print("published MT5 state " + ("(change)" if changed else "(heartbeat)"), flush=True)
+
+            signal: dict[str, Any] | None = None
+            source_id = ""
+
+            if decision_mode:
+                try:
+                    if auto_git_pull:
+                        decision = load_remote_json(decision_path, branch)
+                    else:
+                        decision = load_json(decision_path)
+                    source_id = str(decision.get("id", "")).strip()
+                    if state is None:
+                        raise ValueError("STATE_UNAVAILABLE")
+                    signal = validate_decision(
+                        decision,
+                        state,
+                        max_risk_pct=max_risk_pct,
+                        freshness_seconds=state_freshness_seconds,
+                        max_exposures=max_managed_exposures,
+                        min_trade_risk_pct=min_trade_risk_pct,
+                    )
+                except (ValueError, KeyError, TypeError) as exc:
+                    rejected_key = source_id or "<missing>"
+                    if rejected_key != last_rejected_signal:
+                        print(f"rejected decision id={rejected_key}: {exc}", flush=True)
+                        last_rejected_signal = rejected_key
+                except Exception as exc:
+                    print(f"WARN remote decision unavailable: {exc}", flush=True)
+            else:
+                try:
+                    if auto_git_pull:
+                        try:
+                            signal = load_remote_signal(signal_path, branch)
+                        except Exception as exc:
+                            print(f"WARN remote signal fetch failed, using local copy: {exc}", flush=True)
+                            signal = load_json(signal_path)
+                    else:
+                        signal = load_json(signal_path)
+                    source_id = str(signal.get("id", "")).strip()
+                    validate_signal(signal, max_risk_pct)
+                except ValueError as exc:
+                    rejected_key = source_id or "<missing>"
+                    if rejected_key != last_rejected_signal:
+                        print(f"rejected signal id={rejected_key}: {exc}", flush=True)
+                        last_rejected_signal = rejected_key
+                    signal = None
+
+            if signal is not None:
+                signal_id = str(signal.get("id", "")).strip()
+                try:
+                    action, created_epoch, valid_epoch = validate_signal(signal, max_risk_pct)
+                except ValueError as exc:
+                    if signal_id != last_rejected_signal:
+                        print(f"rejected executable signal id={signal_id or '<missing>'}: {exc}", flush=True)
+                        last_rejected_signal = signal_id
+                else:
+                    already_seen = state is not None and state.get("last_signal_id") == signal_id
+                    if signal_id != last_published and not already_seen:
+                        if decision_mode:
+                            atomic_write(
+                                executor_signal_path,
+                                json.dumps(signal, indent=2, sort_keys=True) + "\n",
+                            )
+                        bridge_line = to_bridge_line(signal, created_epoch, valid_epoch)
+                        for target in bridge_paths:
+                            atomic_write(target, bridge_line)
+                        last_published = signal_id
+                        last_rejected_signal = ""
+                        print(
+                            f"published executable signal id={signal_id} action={action}"
+                            + (" from decision" if decision_mode else ""),
+                            flush=True,
+                        )
 
         except subprocess.TimeoutExpired:
             print("ERROR git operation timed out", flush=True)
