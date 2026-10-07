@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "bootstrap-decision-v1",
+  "symbol": "XAUUSD",
+  "intent": "NO_TRADE",
+  "target_ticket": null,
+  "entry": null,
+  "sl": null,
+  "tp": null,
+  "risk_pct": 0.0,
+  "created_at": "2026-10-07T00:00:00+00:00",
+  "valid_until": "2026-10-07T00:05:00+00:00",
+  "reason": "Expired bootstrap decision. Safe placeholder only; must never create or modify an exposure."
+}
