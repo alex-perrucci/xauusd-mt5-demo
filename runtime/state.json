@@ -1,8 +1,8 @@
 {
-  "aggregate_managed_risk_pct": 0.0143,
-  "ask": 4123.48,
-  "bid": 4123.17,
-  "captured_at": "2026-10-07T09:03:39.451178+00:00",
+  "aggregate_managed_risk_pct": 0.0,
+  "ask": 4123.63,
+  "bid": 4123.33,
+  "captured_at": "2026-10-07T09:04:13.451494+00:00",
   "connected": true,
   "demo": true,
   "hedging": true,
@@ -14,24 +14,12 @@
   },
   "last_closed_deal": null,
   "last_signal_id": "exec-h1-sellstop-20261007-0850z",
-  "managed_pending_order_count": 1,
-  "managed_pending_orders": [
-    {
-      "comment": "cgpt-h1:exec-h1-sellst",
-      "expiration": "2026-10-07T09:04:00+00:00",
-      "price": 4108.0,
-      "risk_pct": 0.0143,
-      "sl": 4124.0,
-      "ticket": 58796319988,
-      "tp": 4076.0,
-      "type": "ORDER_TYPE_SELL_STOP",
-      "volume": 0.01
-    }
-  ],
+  "managed_pending_order_count": 0,
+  "managed_pending_orders": [],
   "managed_position_count": 0,
   "managed_positions": [],
   "schema_version": 2,
-  "server_time": "2026-10-07T09:03:39+00:00",
+  "server_time": "2026-10-07T09:04:13+00:00",
   "symbol": "XAUUSD",
   "trade_allowed": true,
   "unmanaged_symbol_exposure_count": 0
