@@ -6,8 +6,15 @@ ENV_FILE=/etc/xauusd-mt5-demo/mt5.env
 PREFIX=/home/perrucci/.mt5
 MT5_DIR="$PREFIX/drive_c/Program Files/MetaTrader 5"
 TERMINAL_CFG="$PREFIX/drive_c/xauusd/terminal.ini"
-BRIDGE_DIR="$MT5_DIR/MQL5/Files/xauusd"
+DATA_DIR="$(bash "$ROOT/scripts/vps/resolve-data-dir.sh")"
+BRIDGE_DIR="$DATA_DIR/MQL5/Files/xauusd"
+PORTABLE_BRIDGE_DIR="$MT5_DIR/MQL5/Files/xauusd"
+RUNTIME_EA="$DATA_DIR/MQL5/Experts/XAUUSD/SignalBridge.ex5"
 GUARD_FILE="$BRIDGE_DIR/guard.txt"
+PORTABLE_GUARD_FILE="$PORTABLE_BRIDGE_DIR/guard.txt"
+PROFILE_NAME=XAUUSDBridge
+PORTABLE_PROFILE_DIR="$MT5_DIR/MQL5/Profiles/Charts/$PROFILE_NAME"
+DATA_PROFILE_DIR="$DATA_DIR/MQL5/Profiles/Charts/$PROFILE_NAME"
 
 [[ ${EUID} -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 [[ -f "$ENV_FILE" ]] || {
@@ -51,7 +58,13 @@ for value in "$MT5_SERVER" "$BROKER_SYMBOL" "$STARTUP_SYMBOL"; do
 done
 
 install -d -o perrucci -g perrucci -m 0700 "$(dirname "$TERMINAL_CFG")"
-install -d -o perrucci -g perrucci -m 0700 "$BRIDGE_DIR"
+[[ -f "$RUNTIME_EA" ]] || {
+  echo "runtime EA missing: $RUNTIME_EA" >&2
+  echo "run install-ea-and-services.sh first" >&2
+  exit 1
+}
+install -d -o perrucci -g perrucci -m 0700 "$BRIDGE_DIR" "$PORTABLE_BRIDGE_DIR"
+install -d -o perrucci -g perrucci -m 0755 "$PORTABLE_PROFILE_DIR" "$DATA_PROFILE_DIR"
 
 umask 077
 cat > "$TERMINAL_CFG" <<EOF
@@ -63,6 +76,7 @@ KeepPrivate=0
 NewsEnable=0
 
 [Charts]
+ProfileLast=$PROFILE_NAME
 MaxBars=5000
 
 [Experts]
@@ -81,9 +95,10 @@ EOF
 printf '1|%s|%s|%s|%s|%s|%s|%s|%s\n' \
   "$MT5_LOGIN" "$MT5_SERVER" "$BROKER_SYMBOL" "$MAX_SPREAD_POINTS" \
   "$MAX_RISK_PCT" "$MIN_RR" "$MAGIC" "$DEVIATION_POINTS" > "$GUARD_FILE"
+cp "$GUARD_FILE" "$PORTABLE_GUARD_FILE"
 
-chown perrucci:perrucci "$TERMINAL_CFG" "$GUARD_FILE"
-chmod 0600 "$TERMINAL_CFG" "$GUARD_FILE" "$ENV_FILE"
+chown perrucci:perrucci "$TERMINAL_CFG" "$GUARD_FILE" "$PORTABLE_GUARD_FILE"
+chmod 0600 "$TERMINAL_CFG" "$GUARD_FILE" "$PORTABLE_GUARD_FILE" "$ENV_FILE"
 
 systemctl restart xauusd-xvfb.service
 systemctl restart xauusd-mt5.service
@@ -93,3 +108,5 @@ sleep 5
 printf '\nServices:\n'
 systemctl --no-pager --full status xauusd-xvfb.service xauusd-mt5.service xauusd-poller.service || true
 printf '\nNo credentials were written to Git. MT5 config: %s\n' "$TERMINAL_CFG"
+printf 'MT5 data directory: %s\n' "$DATA_DIR"
+printf 'Runtime EA: %s\n' "$RUNTIME_EA"
