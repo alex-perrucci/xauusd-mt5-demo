@@ -4,8 +4,10 @@ set -u
 ROOT=/opt/xauusd-mt5-demo
 PREFIX=/home/perrucci/.mt5
 MT5_DIR="$PREFIX/drive_c/Program Files/MetaTrader 5"
-EA_EX5="$MT5_DIR/MQL5/Experts/XAUUSD/SignalBridge.ex5"
-BRIDGE_DIR="$MT5_DIR/MQL5/Files/xauusd"
+DATA_DIR="$(bash "$ROOT/scripts/vps/resolve-data-dir.sh" 2>/dev/null || true)"
+EA_EX5="$DATA_DIR/MQL5/Experts/XAUUSD/SignalBridge.ex5"
+BRIDGE_DIR="$DATA_DIR/MQL5/Files/xauusd"
+PORTABLE_BRIDGE_DIR="$MT5_DIR/MQL5/Files/xauusd"
 FAILED=0
 
 ok(){ printf 'OK   %s\n' "$*"; }
@@ -21,8 +23,10 @@ if [[ -x /opt/wine-devel/bin/wine ]]; then
 fi
 command -v Xvfb >/dev/null 2>&1 && ok "Xvfb present" || fail "Xvfb missing"
 [[ -f "$MT5_DIR/terminal64.exe" ]] && ok "MT5 terminal present" || fail "MT5 terminal missing"
-[[ -f "$MT5_DIR/metaeditor64.exe" ]] && ok "MetaEditor present" || fail "MetaEditor missing"
-[[ -f "$EA_EX5" ]] && ok "SignalBridge.ex5 compiled" || fail "SignalBridge.ex5 missing"
+[[ -n "$DATA_DIR" && -d "$DATA_DIR" ]] && ok "MT5 data directory: $DATA_DIR" || fail "MT5 data directory unresolved"
+METAEDITOR="$(find "$MT5_DIR" -maxdepth 2 -type f -iname 'metaeditor64.exe' -print -quit)"
+[[ -n "$METAEDITOR" ]] && ok "MetaEditor present: $METAEDITOR" || fail "MetaEditor missing"
+[[ -f "$EA_EX5" ]] && ok "SignalBridge.ex5 installed in MT5 data directory" || fail "runtime SignalBridge.ex5 missing"
 [[ -f /etc/xauusd-mt5-demo/mt5.env ]] && ok "demo credential file present" || warn "demo credential file not configured yet"
 [[ -f "$PREFIX/drive_c/xauusd/terminal.ini" ]] && ok "MT5 startup config rendered" || warn "terminal.ini not rendered yet"
 [[ -f "$BRIDGE_DIR/guard.txt" ]] && ok "EA local guard present" || warn "guard.txt not rendered yet"
@@ -35,10 +39,66 @@ for svc in xauusd-xvfb xauusd-mt5 xauusd-poller; do
   fi
 done
 
-if [[ -f "$BRIDGE_DIR/ack.txt" ]]; then
-  ok "latest MT5 ack: $(tail -n 1 "$BRIDGE_DIR/ack.txt" 2>/dev/null)"
+ACK_FILE=""
+STATE_FILE=""
+for candidate in "$BRIDGE_DIR/ack.txt" "$PORTABLE_BRIDGE_DIR/ack.txt"; do
+  [[ -f "$candidate" ]] || continue
+  if [[ -z "$ACK_FILE" || "$candidate" -nt "$ACK_FILE" ]]; then ACK_FILE="$candidate"; fi
+done
+for candidate in "$BRIDGE_DIR/state.txt" "$PORTABLE_BRIDGE_DIR/state.txt"; do
+  [[ -f "$candidate" ]] || continue
+  if [[ -z "$STATE_FILE" || "$candidate" -nt "$STATE_FILE" ]]; then STATE_FILE="$candidate"; fi
+done
+
+if [[ -n "$ACK_FILE" ]]; then
+  ok "latest MT5 ack: $(tail -n 1 "$ACK_FILE" 2>/dev/null)"
 else
   warn "no MT5 ack yet"
+fi
+
+if [[ -n "$STATE_FILE" ]]; then
+  ok "MT5 state export present"
+  head -n 1 "$STATE_FILE" 2>/dev/null | sed 's/^/     header: /'
+  grep -c '^P|' "$STATE_FILE" 2>/dev/null | sed 's/^/     managed positions: /' || true
+  grep -c '^O|' "$STATE_FILE" 2>/dev/null | sed 's/^/     managed pending: /' || true
+else
+  warn "no MT5 state export yet"
+fi
+
+if [[ -f "$ROOT/runtime/state.json" ]]; then
+  ok "GitHub runtime state file present"
+else
+  warn "runtime/state.json missing"
+fi
+
+printf '\nMT5 runtime diagnostics:\n'
+TERMINAL_LOG="$(find "$MT5_DIR/logs" -type f -name '*.log' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)"
+MQL_LOG="$(find "$MT5_DIR/MQL5/Logs" "$DATA_DIR/MQL5/Logs" -type f -name '*.log' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)"
+
+if [[ -n "$TERMINAL_LOG" ]]; then
+  ok "latest terminal log: $TERMINAL_LOG"
+  if command -v iconv >/dev/null 2>&1; then
+    iconv -f UTF-16LE -t UTF-8 "$TERMINAL_LOG" 2>/dev/null \
+      | tr -d '\r' \
+      | grep -Ei 'SignalBridge|expert|XAUUSD|login|authorization|server|error|failed|cannot|invalid' \
+      | tail -n 80 \
+      | sed 's/^/     /' || true
+  fi
+else
+  warn "no terminal log found"
+fi
+
+if [[ -n "$MQL_LOG" ]]; then
+  ok "latest MQL5 log: $MQL_LOG"
+  if command -v iconv >/dev/null 2>&1; then
+    iconv -f UTF-16LE -t UTF-8 "$MQL_LOG" 2>/dev/null \
+      | tr -d '\r' \
+      | grep -Ei 'SignalBridge|expert|XAUUSD|error|failed|cannot|invalid' \
+      | tail -n 80 \
+      | sed 's/^/     /' || true
+  fi
+else
+  warn "no MQL5 expert log found"
 fi
 
 df -h / | tail -n 1
