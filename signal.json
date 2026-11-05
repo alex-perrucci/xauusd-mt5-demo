@@ -1,13 +1,14 @@
 {
-  "schema_version": 1,
-  "id": "bootstrap-native-mql5-20260916",
+  "schema_version": 3,
+  "id": "h1-no-trade-20261006-2303z",
   "symbol": "XAUUSD",
   "action": "NO_TRADE",
-  "entry_type": "MARKET",
+  "target_ticket": null,
+  "entry": null,
   "sl": null,
   "tp": null,
-  "risk_pct": 0.0,
-  "created_at": "2026-09-16T20:30:00+02:00",
-  "valid_until": "2026-09-23T23:59:00+02:00",
-  "reason": "Safe bootstrap for the native MQL5 bridge. No order should be opened."
+  "risk_pct": 0,
+  "created_at": "2026-10-06T23:03:00+00:00",
+  "valid_until": "2026-10-06T23:55:00+00:00",
+  "reason": "No clean >=2R H1 setup: MT5 is flat near 4163 after Tuesday's rebound, while elevated Treasury yields remain a gold headwind and Sep FOMC minutes on Oct 7 are the next major catalyst."
 }

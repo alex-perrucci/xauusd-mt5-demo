@@ -1,13 +1,19 @@
 #property strict
-#property version   "1.00"
-#property description "XAUUSD demo-only GitHub signal executor"
+#property version   "3.00"
+#property description "XAUUSD demo-only H1 multi-trade bridge with ticketed hedging support"
 
 #define SIGNAL_FILE        "xauusd\\signal.txt"
 #define GUARD_FILE         "xauusd\\guard.txt"
 #define ACK_FILE           "xauusd\\ack.txt"
+#define STATE_FILE         "xauusd\\state.txt"
 #define LAST_SIGNAL_FILE   "xauusd\\last_signal.txt"
+#define PENDING_META_FILE  "xauusd\\pending_meta.txt"
+
 #define ABS_MAX_RISK_PCT   0.5
+#define ABS_MAX_VOLUME     0.01
 #define ABS_MIN_RR         2.0
+#define ABS_MAX_EXPOSURES  3
+#define HUGE_RISK          1.0e100
 
 struct GuardConfig
   {
@@ -27,11 +33,14 @@ struct BridgeSignal
    string   id;
    string   action;
    string   logical_symbol;
+   bool     has_entry;
+   double   entry;
    bool     has_sl;
    double   sl;
    bool     has_tp;
    double   tp;
    double   risk_pct;
+   ulong    target_ticket;
    long     created_epoch;
    long     valid_epoch;
   };
@@ -42,7 +51,7 @@ int OnInit()
   {
    g_last_signal_id=ReadSmallFile(LAST_SIGNAL_FILE);
    EventSetTimer(1);
-   Print("SignalBridge initialized. Data path=",TerminalInfoString(TERMINAL_DATA_PATH));
+   Print("SignalBridge v3 initialized. Data path=",TerminalInfoString(TERMINAL_DATA_PATH));
    return(INIT_SUCCEEDED);
   }
 
@@ -53,7 +62,17 @@ void OnDeinit(const int reason)
 
 void OnTimer()
   {
+   CancelExpiredPending();
+   WriteState();
    ProcessBridge();
+  }
+
+string SafeField(string value)
+  {
+   StringReplace(value,"|","/");
+   StringReplace(value,"\r"," ");
+   StringReplace(value,"\n"," ");
+   return value;
   }
 
 string ReadSmallFile(const string file_name)
@@ -77,13 +96,43 @@ bool WriteSmallFile(const string file_name,const string value)
    return true;
   }
 
+bool AppendSmallFile(const string file_name,const string value)
+  {
+   int h=FileOpen(file_name,FILE_READ|FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h==INVALID_HANDLE)
+      h=FileOpen(file_name,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h==INVALID_HANDLE)
+      return false;
+   FileSeek(h,0,SEEK_END);
+   FileWriteString(h,value+"\r\n");
+   FileFlush(h);
+   FileClose(h);
+   return true;
+  }
+
+void ClearSmallFile(const string file_name)
+  {
+   WriteSmallFile(file_name,"");
+  }
+
+long BrokerUtcOffsetSeconds()
+  {
+   return (long)TimeCurrent()-(long)TimeGMT();
+  }
+
+datetime UtcEpochToBrokerTime(const long utc_epoch)
+  {
+   return (datetime)(utc_epoch+BrokerUtcOffsetSeconds());
+  }
+
+long BrokerTimeToUtcEpoch(const datetime broker_time)
+  {
+   return (long)broker_time-BrokerUtcOffsetSeconds();
+  }
+
 void Acknowledge(const string id,const string status,const string message)
   {
-   string safe_message=message;
-   StringReplace(safe_message,"|","/");
-   StringReplace(safe_message,"\r"," ");
-   StringReplace(safe_message,"\n"," ");
-   string line=id+"|"+status+"|"+IntegerToString((int)TimeCurrent())+"|"+safe_message;
+   string line=id+"|"+status+"|"+IntegerToString((int)TimeGMT())+"|"+SafeField(message);
    WriteSmallFile(ACK_FILE,line);
   }
 
@@ -144,7 +193,7 @@ bool LoadSignal(BridgeSignal &signal,string &error)
    string f[];
    ushort delimiter=StringGetCharacter("|",0);
    int count=StringSplit(line,delimiter,f);
-   if(count!=9)
+   if(count!=11)
      {
       error="invalid signal field count";
       return false;
@@ -154,15 +203,18 @@ bool LoadSignal(BridgeSignal &signal,string &error)
    signal.id=f[1];
    signal.action=f[2];
    signal.logical_symbol=f[3];
-   signal.has_sl=(f[4]!="");
-   signal.sl=signal.has_sl ? StringToDouble(f[4]) : 0.0;
-   signal.has_tp=(f[5]!="");
-   signal.tp=signal.has_tp ? StringToDouble(f[5]) : 0.0;
-   signal.risk_pct=StringToDouble(f[6]);
-   signal.created_epoch=(long)StringToInteger(f[7]);
-   signal.valid_epoch=(long)StringToInteger(f[8]);
+   signal.has_entry=(f[4]!="");
+   signal.entry=signal.has_entry ? StringToDouble(f[4]) : 0.0;
+   signal.has_sl=(f[5]!="");
+   signal.sl=signal.has_sl ? StringToDouble(f[5]) : 0.0;
+   signal.has_tp=(f[6]!="");
+   signal.tp=signal.has_tp ? StringToDouble(f[6]) : 0.0;
+   signal.risk_pct=StringToDouble(f[7]);
+   signal.target_ticket=(f[8]!="") ? (ulong)StringToInteger(f[8]) : 0;
+   signal.created_epoch=(long)StringToInteger(f[9]);
+   signal.valid_epoch=(long)StringToInteger(f[10]);
 
-   if(signal.schema!=1 || signal.id=="" || signal.logical_symbol!="XAUUSD")
+   if(signal.schema!=3 || signal.id=="" || signal.logical_symbol!="XAUUSD")
      {
       error="invalid schema/id/logical symbol";
       return false;
@@ -172,7 +224,11 @@ bool LoadSignal(BridgeSignal &signal,string &error)
 
 bool IsKnownAction(const string action)
   {
-   return action=="NO_TRADE" || action=="HOLD" || action=="BUY" || action=="SELL" || action=="CLOSE" || action=="MODIFY";
+   return action=="NO_TRADE" || action=="HOLD" || action=="STATUS" ||
+          action=="BUY" || action=="SELL" ||
+          action=="BUY_STOP" || action=="SELL_STOP" ||
+          action=="CLOSE" || action=="CANCEL" || action=="MODIFY" ||
+          action=="CLOSE_ALL" || action=="CANCEL_ALL";
   }
 
 bool CheckAccountGuard(const GuardConfig &guard,string &error)
@@ -197,12 +253,19 @@ bool CheckAccountGuard(const GuardConfig &guard,string &error)
       error="unexpected account server";
       return false;
      }
-   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED) || !AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) ||
+      !MQLInfoInteger(MQL_TRADE_ALLOWED) ||
+      !AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
      {
       error="automated trading is disabled";
       return false;
      }
    return true;
+  }
+
+bool IsHedgingAccount()
+  {
+   return (ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE)==ACCOUNT_MARGIN_MODE_RETAIL_HEDGING;
   }
 
 int VolumeDigits(const double step)
@@ -217,7 +280,8 @@ int VolumeDigits(const double step)
    return digits;
   }
 
-double NormalizeRiskVolume(const string symbol,const ENUM_ORDER_TYPE order_type,const double entry,const double sl,const double risk_pct,string &error)
+double NormalizeRiskVolume(const string symbol,const ENUM_ORDER_TYPE side_type,
+                           const double entry,const double sl,const double risk_pct,string &error)
   {
    double equity=AccountInfoDouble(ACCOUNT_EQUITY);
    double risk_amount=equity*(risk_pct/100.0);
@@ -228,7 +292,7 @@ double NormalizeRiskVolume(const string symbol,const ENUM_ORDER_TYPE order_type,
      }
 
    double one_lot_profit=0.0;
-   if(!OrderCalcProfit(order_type,symbol,1.0,entry,sl,one_lot_profit))
+   if(!OrderCalcProfit(side_type,symbol,1.0,entry,sl,one_lot_profit))
      {
       error="OrderCalcProfit failed";
       return 0.0;
@@ -241,11 +305,17 @@ double NormalizeRiskVolume(const string symbol,const ENUM_ORDER_TYPE order_type,
      }
 
    double vmin=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN);
-   double vmax=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX);
+   double broker_vmax=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX);
+   double vmax=MathMin(broker_vmax,ABS_MAX_VOLUME);
    double step=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
-   if(vmin<=0 || vmax<=0 || step<=0)
+   if(vmin<=0 || broker_vmax<=0 || step<=0)
      {
       error="invalid broker volume constraints";
+      return 0.0;
+     }
+   if(vmin>ABS_MAX_VOLUME)
+     {
+      error="broker minimum volume exceeds hard safety cap";
       return 0.0;
      }
 
@@ -260,14 +330,14 @@ double NormalizeRiskVolume(const string symbol,const ENUM_ORDER_TYPE order_type,
    volume=NormalizeDouble(volume,VolumeDigits(step));
 
    double actual_profit=0.0;
-   if(volume<=0 || !OrderCalcProfit(order_type,symbol,volume,entry,sl,actual_profit))
+   if(volume<=0 || !OrderCalcProfit(side_type,symbol,volume,entry,sl,actual_profit))
      {
       error="volume risk verification failed";
       return 0.0;
      }
    if(MathAbs(actual_profit)>risk_amount*1.01)
      {
-      error="normalized volume exceeds risk cap";
+      error="normalized volume exceeds requested risk";
       return 0.0;
      }
    return volume;
@@ -286,22 +356,176 @@ ENUM_ORDER_TYPE_FILLING FillingMode(const string symbol)
    return ORDER_FILLING_FOK;
   }
 
-bool HasAnySymbolPosition(const string symbol)
+bool IsManagedPosition(const string symbol,const ulong magic)
   {
+   return PositionGetString(POSITION_SYMBOL)==symbol &&
+          (ulong)PositionGetInteger(POSITION_MAGIC)==magic;
+  }
+
+bool IsManagedOrder(const string symbol,const ulong magic)
+  {
+   return OrderGetString(ORDER_SYMBOL)==symbol &&
+          (ulong)OrderGetInteger(ORDER_MAGIC)==magic;
+  }
+
+int ManagedPositionCount(const string symbol,const ulong magic)
+  {
+   int count=0;
    for(int i=PositionsTotal()-1;i>=0;i--)
      {
       ulong ticket=PositionGetTicket(i);
-      if(ticket==0)
-         continue;
-      if(PositionGetString(POSITION_SYMBOL)==symbol)
-         return true;
+      if(ticket>0 && IsManagedPosition(symbol,magic))
+         count++;
      }
-   return false;
+   return count;
   }
 
-bool IsManagedPosition(const string symbol,const ulong magic)
+int ManagedOrderCount(const string symbol,const ulong magic)
   {
-   return PositionGetString(POSITION_SYMBOL)==symbol && (ulong)PositionGetInteger(POSITION_MAGIC)==magic;
+   int count=0;
+   for(int i=OrdersTotal()-1;i>=0;i--)
+     {
+      ulong ticket=OrderGetTicket(i);
+      if(ticket>0 && IsManagedOrder(symbol,magic))
+         count++;
+     }
+   return count;
+  }
+
+int UnmanagedSymbolExposureCount(const string symbol,const ulong magic)
+  {
+   int count=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+     {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0 || PositionGetString(POSITION_SYMBOL)!=symbol)
+         continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC)!=magic)
+         count++;
+     }
+   for(int i=OrdersTotal()-1;i>=0;i--)
+     {
+      ulong ticket=OrderGetTicket(i);
+      if(ticket==0 || OrderGetString(ORDER_SYMBOL)!=symbol)
+         continue;
+      if((ulong)OrderGetInteger(ORDER_MAGIC)!=magic)
+         count++;
+     }
+   return count;
+  }
+
+ENUM_ORDER_TYPE DirectionForOrderType(const ENUM_ORDER_TYPE type)
+  {
+   if(type==ORDER_TYPE_BUY || type==ORDER_TYPE_BUY_LIMIT ||
+      type==ORDER_TYPE_BUY_STOP || type==ORDER_TYPE_BUY_STOP_LIMIT)
+      return ORDER_TYPE_BUY;
+   return ORDER_TYPE_SELL;
+  }
+
+double RiskAmountForTrade(const string symbol,const ENUM_ORDER_TYPE direction,
+                          const double volume,const double entry,const double sl)
+  {
+   if(volume<=0 || entry<=0 || sl<=0)
+      return HUGE_RISK;
+   double profit=0.0;
+   if(!OrderCalcProfit(direction,symbol,volume,entry,sl,profit))
+      return HUGE_RISK;
+   if(profit>=0)
+      return 0.0;
+   return -profit;
+  }
+
+double ManagedRiskAmount(const GuardConfig &guard,const ulong exclude_ticket=0)
+  {
+   string symbol=guard.broker_symbol;
+   double total=0.0;
+
+   for(int i=PositionsTotal()-1;i>=0;i--)
+     {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0 || ticket==exclude_ticket || !IsManagedPosition(symbol,guard.magic))
+         continue;
+      ENUM_ORDER_TYPE direction=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)
+                                ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      double amount=RiskAmountForTrade(symbol,direction,
+                                       PositionGetDouble(POSITION_VOLUME),
+                                       PositionGetDouble(POSITION_PRICE_OPEN),
+                                       PositionGetDouble(POSITION_SL));
+      if(amount==HUGE_RISK)
+         return HUGE_RISK;
+      total+=amount;
+     }
+
+   for(int i=OrdersTotal()-1;i>=0;i--)
+     {
+      ulong ticket=OrderGetTicket(i);
+      if(ticket==0 || ticket==exclude_ticket || !IsManagedOrder(symbol,guard.magic))
+         continue;
+      ENUM_ORDER_TYPE direction=DirectionForOrderType((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE));
+      double amount=RiskAmountForTrade(symbol,direction,
+                                       OrderGetDouble(ORDER_VOLUME_CURRENT),
+                                       OrderGetDouble(ORDER_PRICE_OPEN),
+                                       OrderGetDouble(ORDER_SL));
+      if(amount==HUGE_RISK)
+         return HUGE_RISK;
+      total+=amount;
+     }
+   return total;
+  }
+
+double ManagedRiskPct(const GuardConfig &guard)
+  {
+   double equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   double amount=ManagedRiskAmount(guard,0);
+   if(equity<=0 || amount==HUGE_RISK)
+      return 999.0;
+   return 100.0*amount/equity;
+  }
+
+bool CheckAggregateRisk(const GuardConfig &guard,const double candidate_amount,
+                        const ulong exclude_ticket,string &message)
+  {
+   double equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   if(equity<=0 || candidate_amount<0 || candidate_amount==HUGE_RISK)
+     {
+      message="invalid aggregate risk inputs";
+      return false;
+     }
+   double current=ManagedRiskAmount(guard,exclude_ticket);
+   if(current==HUGE_RISK)
+     {
+      message="existing managed exposure has no valid SL/risk";
+      return false;
+     }
+   double pct=100.0*(current+candidate_amount)/equity;
+   if(pct>ABS_MAX_RISK_PCT+1e-8)
+     {
+      message="aggregate managed risk cap exceeded: "+DoubleToString(pct,3)+"%";
+      return false;
+     }
+   return true;
+  }
+
+bool CanAddExposure(const GuardConfig &guard,string &message)
+  {
+   if(!IsHedgingAccount())
+     {
+      message="account is not hedging";
+      return false;
+     }
+   if(UnmanagedSymbolExposureCount(guard.broker_symbol,guard.magic)>0)
+     {
+      message="unmanaged XAUUSD exposure present";
+      return false;
+     }
+   int exposures=ManagedPositionCount(guard.broker_symbol,guard.magic)+
+                 ManagedOrderCount(guard.broker_symbol,guard.magic);
+   if(exposures>=ABS_MAX_EXPOSURES)
+     {
+      message="maximum managed exposures reached";
+      return false;
+     }
+   return true;
   }
 
 bool SendChecked(MqlTradeRequest &request,MqlTradeResult &result,string &message)
@@ -321,40 +545,39 @@ bool SendChecked(MqlTradeRequest &request,MqlTradeResult &result,string &message
       return false;
      }
 
-   if(result.retcode!=TRADE_RETCODE_DONE && result.retcode!=TRADE_RETCODE_PLACED && result.retcode!=TRADE_RETCODE_DONE_PARTIAL)
+   if(result.retcode!=TRADE_RETCODE_DONE &&
+      result.retcode!=TRADE_RETCODE_PLACED &&
+      result.retcode!=TRADE_RETCODE_DONE_PARTIAL)
      {
       message="trade rejected retcode="+IntegerToString((int)result.retcode)+" "+result.comment;
       return false;
      }
-   message="retcode="+IntegerToString((int)result.retcode)+" deal="+(string)result.deal+" order="+(string)result.order;
+   message="retcode="+IntegerToString((int)result.retcode)+
+           " deal="+(string)result.deal+" order="+(string)result.order;
    return true;
   }
 
-bool OpenPosition(const BridgeSignal &signal,const GuardConfig &guard,string &message)
+bool ValidateGeometry(const bool is_buy,const double entry,const double sl,
+                      const double tp,const double min_rr,double &rr,string &message)
   {
-   string symbol=guard.broker_symbol;
-   if(!SymbolSelect(symbol,true))
+   double risk_distance=is_buy ? entry-sl : sl-entry;
+   double reward_distance=is_buy ? tp-entry : entry-tp;
+   if(risk_distance<=0 || reward_distance<=0)
      {
-      message="broker symbol unavailable";
+      message="invalid SL/entry/TP geometry";
       return false;
      }
-   if(HasAnySymbolPosition(symbol))
+   rr=reward_distance/risk_distance;
+   if(rr<min_rr || rr<ABS_MIN_RR)
      {
-      message="existing broker-symbol position; stacking blocked";
+      message="RR below minimum: "+DoubleToString(rr,2);
       return false;
      }
-   if(!signal.has_sl || !signal.has_tp || signal.sl<=0 || signal.tp<=0)
-     {
-      message="SL and TP are mandatory";
-      return false;
-     }
-   if(signal.risk_pct<=0 || signal.risk_pct>guard.max_risk_pct || signal.risk_pct>ABS_MAX_RISK_PCT)
-     {
-      message="risk exceeds local cap";
-      return false;
-     }
+   return true;
+  }
 
-   MqlTick tick={};
+bool CheckSpread(const string symbol,MqlTick &tick,string &message,const GuardConfig &guard)
+  {
    if(!SymbolInfoTick(symbol,tick) || tick.ask<=0 || tick.bid<=0)
      {
       message="no live tick";
@@ -372,23 +595,47 @@ bool OpenPosition(const BridgeSignal &signal,const GuardConfig &guard,string &me
       message="spread too high: "+DoubleToString(spread,1);
       return false;
      }
+   return true;
+  }
+
+bool ValidateRequestedRisk(const BridgeSignal &signal,const GuardConfig &guard,string &message)
+  {
+   if(signal.risk_pct<=0 ||
+      signal.risk_pct>guard.max_risk_pct ||
+      signal.risk_pct>ABS_MAX_RISK_PCT)
+     {
+      message="risk exceeds local cap";
+      return false;
+     }
+   return true;
+  }
+
+bool OpenMarket(const BridgeSignal &signal,const GuardConfig &guard,string &message)
+  {
+   string symbol=guard.broker_symbol;
+   if(!SymbolSelect(symbol,true))
+     {
+      message="broker symbol unavailable";
+      return false;
+     }
+   if(!CanAddExposure(guard,message) || !ValidateRequestedRisk(signal,guard,message))
+      return false;
+   if(!signal.has_sl || !signal.has_tp || signal.sl<=0 || signal.tp<=0)
+     {
+      message="SL and TP are mandatory";
+      return false;
+     }
+
+   MqlTick tick={};
+   if(!CheckSpread(symbol,tick,message,guard))
+      return false;
 
    bool is_buy=(signal.action=="BUY");
    ENUM_ORDER_TYPE type=is_buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    double entry=is_buy ? tick.ask : tick.bid;
-   double risk_distance=is_buy ? entry-signal.sl : signal.sl-entry;
-   double reward_distance=is_buy ? signal.tp-entry : entry-signal.tp;
-   if(risk_distance<=0 || reward_distance<=0)
-     {
-      message="invalid SL/entry/TP geometry";
+   double rr=0.0;
+   if(!ValidateGeometry(is_buy,entry,signal.sl,signal.tp,guard.min_rr,rr,message))
       return false;
-     }
-   double rr=reward_distance/risk_distance;
-   if(rr<guard.min_rr || rr<ABS_MIN_RR)
-     {
-      message="live RR below minimum: "+DoubleToString(rr,2);
-      return false;
-     }
 
    string error="";
    double volume=NormalizeRiskVolume(symbol,type,entry,signal.sl,signal.risk_pct,error);
@@ -397,6 +644,10 @@ bool OpenPosition(const BridgeSignal &signal,const GuardConfig &guard,string &me
       message=error;
       return false;
      }
+
+   double candidate=RiskAmountForTrade(symbol,type,volume,entry,signal.sl);
+   if(!CheckAggregateRisk(guard,candidate,0,message))
+      return false;
 
    int digits=(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
    MqlTradeRequest request={};
@@ -410,78 +661,292 @@ bool OpenPosition(const BridgeSignal &signal,const GuardConfig &guard,string &me
    request.tp=NormalizeDouble(signal.tp,digits);
    request.deviation=guard.deviation_points;
    request.magic=guard.magic;
-   request.comment="cgpt-demo:"+StringSubstr(signal.id,0,12);
+   request.comment="cgpt-h1:"+StringSubstr(signal.id,0,14);
    request.type_time=ORDER_TIME_GTC;
    request.type_filling=FillingMode(symbol);
 
    return SendChecked(request,result,message);
   }
 
-bool CloseManaged(const GuardConfig &guard,string &message)
+void AddPendingMeta(const ulong ticket,const long valid_epoch)
+  {
+   if(ticket>0 && valid_epoch>0)
+      AppendSmallFile(PENDING_META_FILE,(string)ticket+"|"+(string)valid_epoch);
+  }
+
+bool PlacePending(const BridgeSignal &signal,const GuardConfig &guard,string &message)
   {
    string symbol=guard.broker_symbol;
+   if(!SymbolSelect(symbol,true))
+     {
+      message="broker symbol unavailable";
+      return false;
+     }
+   if(!CanAddExposure(guard,message) || !ValidateRequestedRisk(signal,guard,message))
+      return false;
+   if(!signal.has_entry || !signal.has_sl || !signal.has_tp ||
+      signal.entry<=0 || signal.sl<=0 || signal.tp<=0)
+     {
+      message="entry, SL and TP are mandatory for pending orders";
+      return false;
+     }
+
+   MqlTick tick={};
+   if(!CheckSpread(symbol,tick,message,guard))
+      return false;
+
+   bool is_buy=(signal.action=="BUY_STOP");
+   if(is_buy && signal.entry<=tick.ask)
+     {
+      message="BUY_STOP entry must be above current ask";
+      return false;
+     }
+   if(!is_buy && signal.entry>=tick.bid)
+     {
+      message="SELL_STOP entry must be below current bid";
+      return false;
+     }
+
+   double rr=0.0;
+   if(!ValidateGeometry(is_buy,signal.entry,signal.sl,signal.tp,guard.min_rr,rr,message))
+      return false;
+
+   ENUM_ORDER_TYPE direction=is_buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   string error="";
+   double volume=NormalizeRiskVolume(symbol,direction,signal.entry,signal.sl,signal.risk_pct,error);
+   if(volume<=0)
+     {
+      message=error;
+      return false;
+     }
+
+   double candidate=RiskAmountForTrade(symbol,direction,volume,signal.entry,signal.sl);
+   if(!CheckAggregateRisk(guard,candidate,0,message))
+      return false;
+
+   int digits=(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
+   MqlTradeRequest request={};
+   MqlTradeResult result={};
+   request.action=TRADE_ACTION_PENDING;
+   request.symbol=symbol;
+   request.volume=volume;
+   request.type=is_buy ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
+   request.price=NormalizeDouble(signal.entry,digits);
+   request.sl=NormalizeDouble(signal.sl,digits);
+   request.tp=NormalizeDouble(signal.tp,digits);
+   request.magic=guard.magic;
+   request.comment="cgpt-h1:"+StringSubstr(signal.id,0,14);
+   request.type_filling=ORDER_FILLING_RETURN;
+
+   long expiration_modes=SymbolInfoInteger(symbol,SYMBOL_EXPIRATION_MODE);
+   if((expiration_modes & SYMBOL_EXPIRATION_SPECIFIED)==SYMBOL_EXPIRATION_SPECIFIED)
+     {
+      request.type_time=ORDER_TIME_SPECIFIED;
+      request.expiration=UtcEpochToBrokerTime(signal.valid_epoch);
+     }
+   else
+     {
+      request.type_time=ORDER_TIME_GTC;
+     }
+
+   bool ok=SendChecked(request,result,message);
+   if(ok && result.order>0 && request.type_time==ORDER_TIME_GTC)
+      AddPendingMeta(result.order,signal.valid_epoch);
+   return ok;
+  }
+
+bool CancelManagedTicket(const ulong ticket,const GuardConfig &guard,string &message)
+  {
+   if(ticket==0 || !OrderSelect(ticket))
+     {
+      message="target pending order not found";
+      return false;
+     }
+   if(!IsManagedOrder(guard.broker_symbol,guard.magic))
+     {
+      message="target order is not managed by this bridge";
+      return false;
+     }
+
+   MqlTradeRequest request={};
+   MqlTradeResult result={};
+   request.action=TRADE_ACTION_REMOVE;
+   request.order=ticket;
+   request.magic=guard.magic;
+   return SendChecked(request,result,message);
+  }
+
+bool CancelAllManaged(const GuardConfig &guard,string &message)
+  {
+   bool found=false;
+   for(int i=OrdersTotal()-1;i>=0;i--)
+     {
+      ulong ticket=OrderGetTicket(i);
+      if(ticket==0 || !IsManagedOrder(guard.broker_symbol,guard.magic))
+         continue;
+      found=true;
+      string one="";
+      if(!CancelManagedTicket(ticket,guard,one))
+        {
+         message=one;
+         return false;
+        }
+     }
+   message=found ? "all managed pending orders cancelled" : "no managed pending orders";
+   return true;
+  }
+
+void CancelExpiredPending()
+  {
+   int h=FileOpen(PENDING_META_FILE,FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h==INVALID_HANDLE)
+      return;
+
+   GuardConfig guard={};
+   string error="";
+   bool guard_ok=LoadGuard(guard,error) && CheckAccountGuard(guard,error);
+   string keep="";
+
+   while(!FileIsEnding(h))
+     {
+      string rec=FileReadString(h);
+      if(rec=="")
+         continue;
+      string f[];
+      ushort delimiter=StringGetCharacter("|",0);
+      if(StringSplit(rec,delimiter,f)!=2)
+         continue;
+      ulong ticket=(ulong)StringToInteger(f[0]);
+      long valid_epoch=(long)StringToInteger(f[1]);
+      if(ticket==0 || valid_epoch<=0)
+         continue;
+      if(!OrderSelect(ticket) || !guard_ok || !IsManagedOrder(guard.broker_symbol,guard.magic))
+         continue;
+
+      if((long)TimeGMT()<=valid_epoch)
+        {
+         keep+=rec+"\n";
+         continue;
+        }
+
+      string message="";
+      if(CancelManagedTicket(ticket,guard,message))
+        {
+         Acknowledge("expiry-"+(string)ticket,"OK","expired pending cancelled");
+         Print("expired pending ",ticket," cancelled");
+        }
+      else
+         keep+=rec+"\n";
+     }
+   FileClose(h);
+
+   WriteSmallFile(PENDING_META_FILE,keep);
+  }
+
+bool CloseManagedTicket(const ulong ticket,const GuardConfig &guard,string &message)
+  {
+   string symbol=guard.broker_symbol;
+   if(ticket==0 || !PositionSelectByTicket(ticket))
+     {
+      message="target position not found";
+      return false;
+     }
+   if(!IsManagedPosition(symbol,guard.magic))
+     {
+      message="target position is not managed by this bridge";
+      return false;
+     }
+
+   MqlTick tick={};
+   if(!SymbolInfoTick(symbol,tick))
+     {
+      message="no tick while closing";
+      return false;
+     }
+
+   long position_type=PositionGetInteger(POSITION_TYPE);
+   double volume=PositionGetDouble(POSITION_VOLUME);
+   ENUM_ORDER_TYPE type=(position_type==POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+
+   MqlTradeRequest request={};
+   MqlTradeResult result={};
+   request.action=TRADE_ACTION_DEAL;
+   request.position=ticket;
+   request.symbol=symbol;
+   request.volume=volume;
+   request.type=type;
+   request.price=(type==ORDER_TYPE_BUY) ? tick.ask : tick.bid;
+   request.deviation=guard.deviation_points;
+   request.magic=guard.magic;
+   request.comment="cgpt-h1-close";
+   request.type_time=ORDER_TIME_GTC;
+   request.type_filling=FillingMode(symbol);
+   return SendChecked(request,result,message);
+  }
+
+bool CloseAllManaged(const GuardConfig &guard,string &message)
+  {
    bool found=false;
    for(int i=PositionsTotal()-1;i>=0;i--)
      {
       ulong ticket=PositionGetTicket(i);
-      if(ticket==0 || !IsManagedPosition(symbol,guard.magic))
+      if(ticket==0 || !IsManagedPosition(guard.broker_symbol,guard.magic))
          continue;
       found=true;
-      MqlTick tick={};
-      if(!SymbolInfoTick(symbol,tick))
+      string one="";
+      if(!CloseManagedTicket(ticket,guard,one))
         {
-         message="no tick while closing";
+         message=one;
          return false;
         }
-      long position_type=PositionGetInteger(POSITION_TYPE);
-      double volume=PositionGetDouble(POSITION_VOLUME);
-      ENUM_ORDER_TYPE type=(position_type==POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-
-      MqlTradeRequest request={};
-      MqlTradeResult result={};
-      request.action=TRADE_ACTION_DEAL;
-      request.position=ticket;
-      request.symbol=symbol;
-      request.volume=volume;
-      request.type=type;
-      request.price=(type==ORDER_TYPE_BUY) ? tick.ask : tick.bid;
-      request.deviation=guard.deviation_points;
-      request.magic=guard.magic;
-      request.comment="cgpt-close";
-      request.type_time=ORDER_TIME_GTC;
-      request.type_filling=FillingMode(symbol);
-      if(!SendChecked(request,result,message))
-         return false;
      }
-   if(!found)
-      message="no managed position open";
-   else
-      message="managed position(s) closed";
+   message=found ? "all managed positions closed" : "no managed positions";
    return true;
   }
 
 bool ModifyManaged(const BridgeSignal &signal,const GuardConfig &guard,string &message)
   {
+   ulong ticket=signal.target_ticket;
    string symbol=guard.broker_symbol;
-   bool found=false;
-   for(int i=PositionsTotal()-1;i>=0;i--)
+   double equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   if(ticket==0)
      {
-      ulong ticket=PositionGetTicket(i);
-      if(ticket==0 || !IsManagedPosition(symbol,guard.magic))
-         continue;
-      found=true;
+      message="MODIFY requires target_ticket";
+      return false;
+     }
+
+   if(PositionSelectByTicket(ticket))
+     {
+      if(!IsManagedPosition(symbol,guard.magic))
+        {
+         message="target position is not managed by this bridge";
+         return false;
+        }
+      if(signal.has_entry && !signal.has_sl && !signal.has_tp)
+        {
+         message="entry cannot modify an open position";
+         return false;
+        }
+
       MqlTick tick={};
       if(!SymbolInfoTick(symbol,tick))
         {
-         message="no tick while modifying";
+         message="no tick while modifying position";
          return false;
         }
-      long position_type=PositionGetInteger(POSITION_TYPE);
+
+      long ptype=PositionGetInteger(POSITION_TYPE);
+      bool is_buy=(ptype==POSITION_TYPE_BUY);
       double sl=signal.has_sl ? signal.sl : PositionGetDouble(POSITION_SL);
       double tp=signal.has_tp ? signal.tp : PositionGetDouble(POSITION_TP);
-      if(position_type==POSITION_TYPE_BUY)
+      if(sl<=0 || tp<=0)
         {
-         if((sl>0 && sl>=tick.bid) || (tp>0 && tp<=tick.bid))
+         message="managed positions must keep SL and TP";
+         return false;
+        }
+      if(is_buy)
+        {
+         if(sl>=tick.bid || tp<=tick.bid)
            {
             message="invalid BUY SL/TP modification";
             return false;
@@ -489,12 +954,30 @@ bool ModifyManaged(const BridgeSignal &signal,const GuardConfig &guard,string &m
         }
       else
         {
-         if((sl>0 && sl<=tick.ask) || (tp>0 && tp>=tick.ask))
+         if(sl<=tick.ask || tp>=tick.ask)
            {
             message="invalid SELL SL/TP modification";
             return false;
            }
         }
+
+      ENUM_ORDER_TYPE direction=is_buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      double candidate=RiskAmountForTrade(symbol,direction,
+                                          PositionGetDouble(POSITION_VOLUME),
+                                          PositionGetDouble(POSITION_PRICE_OPEN),sl);
+      if(equity<=0)
+        {
+         message="invalid account equity";
+         return false;
+        }
+      double candidate_pct=100.0*candidate/equity;
+      if(candidate_pct>guard.max_risk_pct+1e-8 || candidate_pct>ABS_MAX_RISK_PCT+1e-8)
+        {
+         message="modified position risk exceeds per-trade cap";
+         return false;
+        }
+      if(!CheckAggregateRisk(guard,candidate,ticket,message))
+         return false;
 
       int digits=(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
       MqlTradeRequest request={};
@@ -502,19 +985,213 @@ bool ModifyManaged(const BridgeSignal &signal,const GuardConfig &guard,string &m
       request.action=TRADE_ACTION_SLTP;
       request.position=ticket;
       request.symbol=symbol;
-      request.sl=sl>0 ? NormalizeDouble(sl,digits) : 0.0;
-      request.tp=tp>0 ? NormalizeDouble(tp,digits) : 0.0;
+      request.sl=NormalizeDouble(sl,digits);
+      request.tp=NormalizeDouble(tp,digits);
       request.magic=guard.magic;
-      if(!SendChecked(request,result,message))
-         return false;
+      return SendChecked(request,result,message);
      }
-   if(!found)
+
+   if(OrderSelect(ticket))
      {
-      message="no managed position to modify";
-      return false;
+      if(!IsManagedOrder(symbol,guard.magic))
+        {
+         message="target pending order is not managed by this bridge";
+         return false;
+        }
+
+      ENUM_ORDER_TYPE otype=(ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      if(otype!=ORDER_TYPE_BUY_STOP && otype!=ORDER_TYPE_SELL_STOP)
+        {
+         message="only managed BUY_STOP/SELL_STOP can be modified";
+         return false;
+        }
+      bool is_buy=(otype==ORDER_TYPE_BUY_STOP);
+      double entry=signal.has_entry ? signal.entry : OrderGetDouble(ORDER_PRICE_OPEN);
+      double sl=signal.has_sl ? signal.sl : OrderGetDouble(ORDER_SL);
+      double tp=signal.has_tp ? signal.tp : OrderGetDouble(ORDER_TP);
+      if(entry<=0 || sl<=0 || tp<=0)
+        {
+         message="pending order must keep entry, SL and TP";
+         return false;
+        }
+
+      MqlTick tick={};
+      if(!CheckSpread(symbol,tick,message,guard))
+         return false;
+      if(is_buy && entry<=tick.ask)
+        {
+         message="BUY_STOP entry must remain above current ask";
+         return false;
+        }
+      if(!is_buy && entry>=tick.bid)
+        {
+         message="SELL_STOP entry must remain below current bid";
+         return false;
+        }
+
+      double rr=0.0;
+      if(!ValidateGeometry(is_buy,entry,sl,tp,guard.min_rr,rr,message))
+         return false;
+
+      ENUM_ORDER_TYPE direction=is_buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      double candidate=RiskAmountForTrade(symbol,direction,
+                                          OrderGetDouble(ORDER_VOLUME_CURRENT),entry,sl);
+      if(equity<=0)
+        {
+         message="invalid account equity";
+         return false;
+        }
+      double candidate_pct=100.0*candidate/equity;
+      if(candidate_pct>guard.max_risk_pct+1e-8 || candidate_pct>ABS_MAX_RISK_PCT+1e-8)
+        {
+         message="modified pending risk exceeds per-trade cap";
+         return false;
+        }
+      if(!CheckAggregateRisk(guard,candidate,ticket,message))
+         return false;
+
+      int digits=(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
+      MqlTradeRequest request={};
+      MqlTradeResult result={};
+      request.action=TRADE_ACTION_MODIFY;
+      request.order=ticket;
+      request.price=NormalizeDouble(entry,digits);
+      request.sl=NormalizeDouble(sl,digits);
+      request.tp=NormalizeDouble(tp,digits);
+      request.magic=guard.magic;
+      request.type_time=(ENUM_ORDER_TYPE_TIME)OrderGetInteger(ORDER_TYPE_TIME);
+      request.expiration=(datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
+      if(request.type_time==ORDER_TIME_SPECIFIED)
+         request.expiration=UtcEpochToBrokerTime(signal.valid_epoch);
+      return SendChecked(request,result,message);
      }
-   message="managed position modified";
-   return true;
+
+   message="target ticket not found";
+   return false;
+  }
+
+void WriteState()
+  {
+   GuardConfig guard={};
+   string error="";
+   if(!LoadGuard(guard,error))
+      return;
+
+   string symbol=guard.broker_symbol;
+   SymbolSelect(symbol,true);
+   MqlTick tick={};
+   bool has_tick=SymbolInfoTick(symbol,tick);
+
+   int connected=(int)TerminalInfoInteger(TERMINAL_CONNECTED);
+   int demo=((ENUM_ACCOUNT_TRADE_MODE)AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO) ? 1 : 0;
+   int trade_allowed=(TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) &&
+                      MQLInfoInteger(MQL_TRADE_ALLOWED) &&
+                      AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)) ? 1 : 0;
+   int hedging=IsHedgingAccount() ? 1 : 0;
+
+   int pos_count=ManagedPositionCount(symbol,guard.magic);
+   int order_count=ManagedOrderCount(symbol,guard.magic);
+   int unmanaged_count=UnmanagedSymbolExposureCount(symbol,guard.magic);
+   double aggregate_risk=ManagedRiskPct(guard);
+   double equity=AccountInfoDouble(ACCOUNT_EQUITY);
+
+   string bid=has_tick ? DoubleToString(tick.bid,8) : "";
+   string ask=has_tick ? DoubleToString(tick.ask,8) : "";
+   string content=
+      "2|"+(string)((long)TimeGMT())+
+      "|"+IntegerToString(connected)+
+      "|"+IntegerToString(demo)+
+      "|"+IntegerToString(trade_allowed)+
+      "|"+IntegerToString(hedging)+
+      "|"+symbol+
+      "|"+bid+
+      "|"+ask+
+      "|"+IntegerToString(pos_count)+
+      "|"+IntegerToString(order_count)+
+      "|"+IntegerToString(unmanaged_count)+
+      "|"+DoubleToString(aggregate_risk,4)+
+      "|"+g_last_signal_id;
+
+   for(int i=PositionsTotal()-1;i>=0;i--)
+     {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0 || !IsManagedPosition(symbol,guard.magic))
+         continue;
+      long ptype=PositionGetInteger(POSITION_TYPE);
+      string type=(ptype==POSITION_TYPE_BUY) ? "BUY" : "SELL";
+      ENUM_ORDER_TYPE direction=(ptype==POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      double risk_amount=RiskAmountForTrade(symbol,direction,
+                                            PositionGetDouble(POSITION_VOLUME),
+                                            PositionGetDouble(POSITION_PRICE_OPEN),
+                                            PositionGetDouble(POSITION_SL));
+      double risk_pct=(equity>0 && risk_amount!=HUGE_RISK) ? 100.0*risk_amount/equity : 999.0;
+      content+="\nP|"+(string)ticket+
+               "|"+type+
+               "|"+DoubleToString(PositionGetDouble(POSITION_VOLUME),8)+
+               "|"+DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN),8)+
+               "|"+DoubleToString(PositionGetDouble(POSITION_SL),8)+
+               "|"+DoubleToString(PositionGetDouble(POSITION_TP),8)+
+               "|"+DoubleToString(PositionGetDouble(POSITION_PROFIT),2)+
+               "|"+DoubleToString(risk_pct,4)+
+               "|"+SafeField(PositionGetString(POSITION_COMMENT));
+     }
+
+   for(int i=OrdersTotal()-1;i>=0;i--)
+     {
+      ulong ticket=OrderGetTicket(i);
+      if(ticket==0 || !IsManagedOrder(symbol,guard.magic))
+         continue;
+      ENUM_ORDER_TYPE otype=(ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      ENUM_ORDER_TYPE direction=DirectionForOrderType(otype);
+      double risk_amount=RiskAmountForTrade(symbol,direction,
+                                            OrderGetDouble(ORDER_VOLUME_CURRENT),
+                                            OrderGetDouble(ORDER_PRICE_OPEN),
+                                            OrderGetDouble(ORDER_SL));
+      double risk_pct=(equity>0 && risk_amount!=HUGE_RISK) ? 100.0*risk_amount/equity : 999.0;
+      datetime expiration=(datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
+      string expiration_utc=expiration>0 ? (string)BrokerTimeToUtcEpoch(expiration) : "";
+      content+="\nO|"+(string)ticket+
+               "|"+EnumToString(otype)+
+               "|"+DoubleToString(OrderGetDouble(ORDER_VOLUME_CURRENT),8)+
+               "|"+DoubleToString(OrderGetDouble(ORDER_PRICE_OPEN),8)+
+               "|"+DoubleToString(OrderGetDouble(ORDER_SL),8)+
+               "|"+DoubleToString(OrderGetDouble(ORDER_TP),8)+
+               "|"+DoubleToString(risk_pct,4)+
+               "|"+expiration_utc+
+               "|"+SafeField(OrderGetString(ORDER_COMMENT));
+     }
+
+   datetime history_to=TimeCurrent();
+   datetime history_from=history_to-(60*24*60*60);
+   if(HistorySelect(history_from,history_to))
+     {
+      for(int i=HistoryDealsTotal()-1;i>=0;i--)
+        {
+         ulong deal_ticket=HistoryDealGetTicket(i);
+         if(deal_ticket==0)
+            continue;
+         if(HistoryDealGetString(deal_ticket,DEAL_SYMBOL)!=symbol)
+            continue;
+         if((ulong)HistoryDealGetInteger(deal_ticket,DEAL_MAGIC)!=guard.magic)
+            continue;
+
+         ENUM_DEAL_ENTRY deal_entry=(ENUM_DEAL_ENTRY)HistoryDealGetInteger(deal_ticket,DEAL_ENTRY);
+         if(deal_entry!=DEAL_ENTRY_OUT && deal_entry!=DEAL_ENTRY_OUT_BY)
+            continue;
+
+         datetime deal_time=(datetime)HistoryDealGetInteger(deal_ticket,DEAL_TIME);
+         content+="\nD|"+(string)deal_ticket+
+                  "|"+(string)HistoryDealGetInteger(deal_ticket,DEAL_POSITION_ID)+
+                  "|"+EnumToString((ENUM_DEAL_TYPE)HistoryDealGetInteger(deal_ticket,DEAL_TYPE))+
+                  "|"+EnumToString((ENUM_DEAL_REASON)HistoryDealGetInteger(deal_ticket,DEAL_REASON))+
+                  "|"+DoubleToString(HistoryDealGetDouble(deal_ticket,DEAL_PRICE),8)+
+                  "|"+DoubleToString(HistoryDealGetDouble(deal_ticket,DEAL_PROFIT),2)+
+                  "|"+(string)BrokerTimeToUtcEpoch(deal_time);
+         break;
+        }
+     }
+
+   WriteSmallFile(STATE_FILE,content);
   }
 
 void ProcessBridge()
@@ -531,13 +1208,22 @@ void ProcessBridge()
       FinishSignal(signal.id,"BLOCKED","unknown action");
       return;
      }
-   if(signal.valid_epoch<=0 || (long)TimeCurrent()>signal.valid_epoch)
+
+   long now=(long)TimeGMT();
+   if(signal.created_epoch>now+300)
+     {
+      FinishSignal(signal.id,"BLOCKED","signal created_at is in the future");
+      return;
+     }
+   if(signal.valid_epoch<=0 || now>signal.valid_epoch)
      {
       FinishSignal(signal.id,"BLOCKED","signal expired");
       return;
      }
-   if(signal.action=="NO_TRADE" || signal.action=="HOLD")
+
+   if(signal.action=="NO_TRADE" || signal.action=="HOLD" || signal.action=="STATUS")
      {
+      WriteState();
       FinishSignal(signal.id,"OK",signal.action+" acknowledged");
       return;
      }
@@ -561,12 +1247,38 @@ void ProcessBridge()
 
    string message="";
    bool ok=false;
+
    if(signal.action=="BUY" || signal.action=="SELL")
-      ok=OpenPosition(signal,guard,message);
+      ok=OpenMarket(signal,guard,message);
+   else if(signal.action=="BUY_STOP" || signal.action=="SELL_STOP")
+      ok=PlacePending(signal,guard,message);
    else if(signal.action=="CLOSE")
-      ok=CloseManaged(guard,message);
+     {
+      if(signal.target_ticket==0)
+        {
+         message="CLOSE requires target_ticket";
+         ok=false;
+        }
+      else
+         ok=CloseManagedTicket(signal.target_ticket,guard,message);
+     }
+   else if(signal.action=="CANCEL")
+     {
+      if(signal.target_ticket==0)
+        {
+         message="CANCEL requires target_ticket";
+         ok=false;
+        }
+      else
+         ok=CancelManagedTicket(signal.target_ticket,guard,message);
+     }
    else if(signal.action=="MODIFY")
       ok=ModifyManaged(signal,guard,message);
+   else if(signal.action=="CLOSE_ALL")
+      ok=CloseAllManaged(guard,message);
+   else if(signal.action=="CANCEL_ALL")
+      ok=CancelAllManaged(guard,message);
 
    FinishSignal(signal.id,ok ? "OK" : "BLOCKED",message);
+   WriteState();
   }
