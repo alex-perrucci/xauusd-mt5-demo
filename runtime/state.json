@@ -1,8 +1,8 @@
 {
   "aggregate_managed_risk_pct": 0.0,
-  "ask": 4113.18,
-  "bid": 4113.01,
-  "captured_at": "2026-11-10T03:42:06.126939+00:00",
+  "ask": 4110.45,
+  "bid": 4110.28,
+  "captured_at": "2026-11-10T03:44:14.127387+00:00",
   "connected": true,
   "demo": true,
   "hedging": true,
@@ -19,7 +19,7 @@
   "managed_position_count": 0,
   "managed_positions": [],
   "schema_version": 2,
-  "server_time": "2026-11-10T03:42:06+00:00",
+  "server_time": "2026-11-10T03:44:14+00:00",
   "symbol": "XAUUSD",
   "trade_allowed": true,
   "unmanaged_symbol_exposure_count": 0
